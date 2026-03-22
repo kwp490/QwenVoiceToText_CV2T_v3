@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cv2t"
+version = "2.0.0"
+description = "Native Windows voice-to-text using Canary or Whisper — no Docker, no WSL, no HTTP"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "kwp490" }]
+
+dependencies = [
+    "PySide6>=6.6,<7",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+    "keyboard>=0.13",
+    "nvidia-ml-py>=12.0; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+canary = [
+    "nemo_toolkit[asr]>=2.0",
+    "torch>=2.1",
+    "accelerate",
+]
+canary-onnx = [
+    "onnxruntime-gpu==1.19.*",
+]
+whisper = [
+    "faster-whisper>=1.0",
+]
+all = ["cv2t[canary,whisper]"]
+dev = [
+    "pyinstaller>=6.0",
+    "pytest>=7.0",
+]
+
+[project.scripts]
+cv2t = "cv2t.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
