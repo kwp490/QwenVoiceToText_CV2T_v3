@@ -259,14 +259,10 @@
     - Consider Inno Setup or NSIS as a follow-up for a traditional Windows installer wizard with uninstall support.
 
 18. **Model downloader** — Create `download_model.py` at root (also callable via `cv2t download-model` CLI): supports both Canary and Whisper downloads. CLI: `--engine canary|whisper --target-dir "%LOCALAPPDATA%\CV2T\models"`.
-    - **Canary target**: `nvidia/canary-qwen-2.5b` via `huggingface_hub.snapshot_download()`.
-    - **Whisper target**: Use faster-whisper's built-in download mechanism. Call `faster_whisper.utils.download_model("large-v3-turbo", output_dir=target_dir)` or equivalent. Do NOT hardcode a HuggingFace repo path like `Systran/faster-whisper-large-v3-turbo` — let the library resolve the correct repo from the model name.
+    - **Canary target**: `onnx-community/canary-qwen-2.5b-ONNX` via `huggingface_hub.snapshot_download()`. This is an open model (CC-BY-4.0) — no authentication required.
+    - **Whisper target**: `Systran/faster-whisper-large-v3-turbo` via `huggingface_hub.snapshot_download()`. Open model — no authentication required.
     - **Default target directory**: `%LOCALAPPDATA%\CV2T\models` (user-writable, no admin required).
-    - **Hugging Face authentication**: The official `nvidia/canary-qwen-2.5b` repo is a **gated model** requiring license acceptance on huggingface.co. `snapshot_download()` will fail with HTTP 401/403 if authentication is missing. Handle this:
-      1. Accept `--hf-token <token>` CLI argument, passed to `snapshot_download(token=...)`.  
-      2. If `--hf-token` is not provided, fall back to the `HF_TOKEN` environment variable (which `huggingface_hub` reads automatically).  
-      3. If neither is set and the target repo is gated, print a clear error message explaining the user must either (a) run `huggingface-cli login`, (b) set `HF_TOKEN`, or (c) pass `--hf-token`.  
-      4. If Step 3 determined that an **ungated** ONNX community port is viable (e.g., `onnx-community/canary-qwen-2.5b-ONNX`), default to that repo instead — no token needed. Keep `--repo-id` override for users who want the official gated model.
+    - **No authentication needed**: Both models are open and publicly accessible. No `--hf-token` argument, no `HF_TOKEN` environment variable, and no `huggingface-cli login` prompts.
 
 19. **README.md** — What it does, requirements (Windows 11, NVIDIA 30-series+), quick start (3 commands), settings table, hotkeys table, architecture diagram (GUI ↔ Engine ↔ GPU), model comparison table (Canary vs Whisper), building .exe, contributing.
 

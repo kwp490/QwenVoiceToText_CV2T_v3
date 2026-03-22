@@ -97,11 +97,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory to store models (default: %%LOCALAPPDATA%%\\CV2T\\models)",
     )
-    dl.add_argument(
-        "--hf-token",
-        default=None,
-        help="Hugging Face token for gated models (Canary)",
-    )
 
     return parser
 
@@ -109,54 +104,26 @@ def _build_parser() -> argparse.ArgumentParser:
 def _cmd_download_model(args: argparse.Namespace) -> int:
     """Handle the download-model subcommand."""
     from .config import DEFAULT_MODELS_DIR
+    from huggingface_hub import snapshot_download
 
     target_dir = args.target_dir or DEFAULT_MODELS_DIR
     os.makedirs(target_dir, exist_ok=True)
 
-    if args.engine == "whisper":
-        try:
-            from faster_whisper import WhisperModel
-            print(f"Downloading Whisper large-v3-turbo to {target_dir}…")
-            WhisperModel("large-v3-turbo", device="cpu", compute_type="int8",
-                         download_root=target_dir)
-            print("Whisper model downloaded successfully.")
-            return 0
-        except ImportError:
-            print("ERROR: faster-whisper not installed. Install with: uv sync --extra whisper")
-            return 1
-        except Exception as exc:
-            print(f"ERROR: {exc}")
-            return 1
+    if args.engine == "canary":
+        repo_id = "onnx-community/canary-qwen-2.5b-ONNX"
+    elif args.engine == "whisper":
+        repo_id = "Systran/faster-whisper-large-v3-turbo"
+    else:
+        return 1
 
-    elif args.engine == "canary":
-        try:
-            from huggingface_hub import snapshot_download
-            repo_id = "nvidia/canary-qwen-2.5b"
-            token = args.hf_token or os.environ.get("HF_TOKEN")
-            print(f"Downloading {repo_id} to {target_dir}…")
-            if not token:
-                print(
-                    "NOTE: nvidia/canary-qwen-2.5b is a gated model.\n"
-                    "If download fails with 401/403, you must either:\n"
-                    "  1. Run: huggingface-cli login\n"
-                    "  2. Set HF_TOKEN environment variable\n"
-                    "  3. Pass --hf-token <token>\n"
-                )
-            snapshot_download(
-                repo_id,
-                local_dir=os.path.join(target_dir, "canary-qwen-2.5b"),
-                token=token,
-            )
-            print("Canary model downloaded successfully.")
-            return 0
-        except ImportError:
-            print("ERROR: huggingface_hub not installed. Install with: uv sync --extra canary")
-            return 1
-        except Exception as exc:
-            print(f"ERROR: {exc}")
-            return 1
-
-    return 1
+    print(f"Downloading {repo_id} to {target_dir}...")
+    try:
+        snapshot_download(repo_id=repo_id, local_dir=target_dir)
+        print("Download complete.")
+        return 0
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

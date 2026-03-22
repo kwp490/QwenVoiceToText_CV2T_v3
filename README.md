@@ -6,7 +6,7 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 
 ## Features
 
-- **Two engine options**: NVIDIA Canary Qwen 2.5B (NeMo/torch) or Faster-Whisper (CTranslate2)
+- **Two engine options**: NVIDIA Canary Qwen 2.5B (ONNX) or Faster-Whisper (CTranslate2)
 - **Global hotkeys**: Start/stop recording from any application
 - **Auto-paste**: Transcribed text goes directly to your active window
 - **GPU-accelerated**: Both engines leverage NVIDIA CUDA
@@ -32,7 +32,7 @@ cd cv2t
 uv sync --extra all
 
 # 3. Download model and launch
-uv run cv2t download-model --engine whisper --target-dir "$env:LOCALAPPDATA\CV2T\models"
+uv run cv2t download-model --engine canary --target-dir "$env:LOCALAPPDATA\CV2T\models"
 uv run cv2t
 ```
 
@@ -93,9 +93,9 @@ Hotkeys are configurable in Settings.
 
 ## Model Comparison
 
-| | Canary (NeMo) | Whisper (CTranslate2) |
+| | Canary (ONNX) | Whisper (CTranslate2) |
 |---|---|---|
-| **Model** | nvidia/canary-qwen-2.5b | large-v3-turbo |
+| **Model** | onnx-community/canary-qwen-2.5b-ONNX | Systran/faster-whisper-large-v3-turbo |
 | **VRAM** | ~5 GB | ~3 GB |
 | **Accuracy** | Excellent | Very good |
 | **Speed** | Fast | Very fast |
@@ -139,7 +139,7 @@ uv run pyinstaller cv2t.spec
 ```bash
 cv2t                                                    # Launch GUI
 cv2t download-model --engine whisper --target-dir DIR   # Download model
-cv2t download-model --engine canary --target-dir DIR    # Download Canary model
+cv2t download-model --engine canary --target-dir DIR    # Download Canary model (no auth required)
 cv2t --version                                          # Print version
 ```
 
