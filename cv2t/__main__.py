@@ -201,43 +201,36 @@ def _download_whisper(target_dir: str) -> int:
     if _whisper_model_ready(target_dir):
         print(f"Whisper model already present in {target_dir} — skipping download.")
         return 0
-
     _print_whisper_runtime_diagnostics()
-    print(f"Downloading Whisper model '{_WHISPER_MODEL_ID}' to {target_dir} ...")
-    print(f"Resolved download repo: {_WHISPER_REPO_ID}")
-    try:
-        from huggingface_hub import snapshot_download
-
-        model_dir = snapshot_download(
-            repo_id=_WHISPER_REPO_ID,
-            local_dir=target_dir,
-            local_files_only=False,
-            allow_patterns=_WHISPER_ALLOW_PATTERNS,
-        )
-        print(f"Download complete — model stored at {model_dir}")
-        return 0
-    except ValueError as exc:
-        print(f"ERROR: Invalid model name '{_WHISPER_MODEL_ID}': {exc}")
-        return 1
-    except Exception as exc:
-        msg = str(exc)
-        if "401" in msg or "Repository Not Found" in msg:
-            print(
-                "ERROR: Model repo not found or access denied for "
-                f"'{_WHISPER_REPO_ID}': {exc}"
-            )
-        else:
-            print(f"ERROR: Download failed (network or server issue): {exc}")
-        return 1
+    return _download_model("Whisper", _WHISPER_REPO_ID, target_dir,
+                           allow_patterns=_WHISPER_ALLOW_PATTERNS)
 
 
 def _download_canary(target_dir: str) -> int:
     """Download Canary NeMo SALM model via huggingface_hub."""
-    repo_id = "nvidia/canary-qwen-2.5b"
-    print(f"Downloading {repo_id} to {target_dir}...")
+    return _download_model("Canary", "nvidia/canary-qwen-2.5b", target_dir)
+
+
+def _download_model(
+    engine_label: str,
+    repo_id: str,
+    target_dir: str,
+    *,
+    allow_patterns: list | None = None,
+) -> int:
+    """Generic HuggingFace model download with standard error handling."""
+    print(f"Downloading {engine_label} model from {repo_id} to {target_dir}...")
     try:
         from huggingface_hub import snapshot_download
-        snapshot_download(repo_id=repo_id, local_dir=target_dir)
+
+        kwargs: dict = {
+            "repo_id": repo_id,
+            "local_dir": target_dir,
+            "local_files_only": False,
+        }
+        if allow_patterns:
+            kwargs["allow_patterns"] = allow_patterns
+        snapshot_download(**kwargs)
         print("Download complete.")
         return 0
     except Exception as exc:

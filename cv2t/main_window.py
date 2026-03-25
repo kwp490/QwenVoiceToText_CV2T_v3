@@ -39,10 +39,28 @@ import numpy as np
 
 from .audio import AudioRecorder, play_beep
 from .clipboard import set_clipboard_text, simulate_paste
+from ._constants import (
+    COLOR_ERROR,
+    COLOR_IDLE,
+    COLOR_INFO,
+    COLOR_NEUTRAL,
+    COLOR_SUCCESS,
+    COLOR_VALIDATED,
+    COLOR_WARNING,
+    LOADING_TICK_MS,
+    METRICS_POLL_MS,
+    PBT_APMRESUMEAUTOMATIC,
+    PBT_APMRESUMESUSPEND,
+    STATE_RESET_ERROR_MS,
+    STATE_RESET_IDLE_MS,
+    SYSTEM_RESUME_DEBOUNCE_S,
+    SYSTEM_RESUME_DELAY_MS,
+    WM_POWERBROADCAST,
+)
 from .config import DEFAULT_LOG_DIR, Settings
 from .engine import ENGINES
-from .gpu_monitor import get_system_metrics
 from .hotkeys import HotkeyManager
+from ._resource_monitor import ResourceMonitor
 from .workers import Worker
 
 # Engine families that cannot coexist in a single process due to
@@ -174,8 +192,16 @@ class MainWindow(QMainWindow):
         self._dictation_state = DictationState.IDLE
         self._model_status = ModelStatus.NOT_LOADED
         self._model_load_start: float = 0.0
-        self._metrics_poll_in_flight: bool = False
         self._last_resume_time: float = 0.0
+
+        # ── Resource monitor ─────────────────────────────────────────────────
+        self._res_monitor = ResourceMonitor(
+            pool=self._pool, interval_ms=METRICS_POLL_MS, parent=self,
+        )
+        self._res_monitor.metrics_updated.connect(self._on_metrics_result)
+        self._res_monitor.metrics_error.connect(
+            lambda err: log.error("Metrics poll error: %s", err)
+        )
 
         # ── Build UI ─────────────────────────────────────────────────────────
         self.setWindowTitle("CV2T — Voice to Text")
@@ -371,12 +397,10 @@ class MainWindow(QMainWindow):
         # Model loading elapsed timer (updates label during loading)
         self._loading_timer = QTimer(self)
         self._loading_timer.timeout.connect(self._update_loading_label)
-        self._loading_timer.setInterval(1000)
+        self._loading_timer.setInterval(LOADING_TICK_MS)
 
-        # Resource-metrics timer
-        self._metrics_timer = QTimer(self)
-        self._metrics_timer.timeout.connect(self._poll_metrics)
-        self._metrics_timer.start(5000)
+        # Start resource-metrics polling
+        self._res_monitor.start()
 
     # ═════════════════════════════════════════════════════════════════════════
     # HOTKEYS
@@ -413,14 +437,14 @@ class MainWindow(QMainWindow):
     def _set_model_status(self, status: ModelStatus) -> None:
         self._model_status = status
         color_map = {
-            ModelStatus.READY: "#2e7d32",
-            ModelStatus.VALIDATED: "#1b5e20",
-            ModelStatus.LOADING: "#f57f17",
-            ModelStatus.NOT_LOADED: "#757575",
-            ModelStatus.VALIDATING: "#1565c0",
-            ModelStatus.ERROR: "#c62828",
+            ModelStatus.READY: COLOR_SUCCESS,
+            ModelStatus.VALIDATED: COLOR_VALIDATED,
+            ModelStatus.LOADING: COLOR_WARNING,
+            ModelStatus.NOT_LOADED: COLOR_NEUTRAL,
+            ModelStatus.VALIDATING: COLOR_INFO,
+            ModelStatus.ERROR: COLOR_ERROR,
         }
-        color = color_map.get(status, "#757575")
+        color = color_map.get(status, COLOR_NEUTRAL)
         self._lbl_model_status.setText(
             f'Status: <span style="color:{color}"><b>{status.value}</b></span>'
         )
@@ -461,7 +485,7 @@ class MainWindow(QMainWindow):
         if self._model_status == ModelStatus.LOADING:
             elapsed = int(time.time() - self._model_load_start)
             self._lbl_model_status.setText(
-                f'Status: <span style="color:#f57f17"><b>Loading… {elapsed}s</b></span>'
+                f'Status: <span style="color:{COLOR_WARNING}"><b>Loading… {elapsed}s</b></span>'
             )
 
     @Slot()
@@ -484,25 +508,8 @@ class MainWindow(QMainWindow):
 
     # ── Resource metrics ──────────────────────────────────────────────────────
 
-    def _poll_metrics(self) -> None:
-        """Periodic resource usage poll — runs on thread pool."""
-        if self._metrics_poll_in_flight:
-            return
-        self._metrics_poll_in_flight = True
-
-        worker = Worker(get_system_metrics)
-        worker.signals.result.connect(self._on_metrics_result)
-        worker.signals.error.connect(self._on_metrics_error)
-        self._pool.start(worker)
-
-    @Slot(str)
-    def _on_metrics_error(self, err: str) -> None:
-        self._metrics_poll_in_flight = False
-        log.error("Metrics worker error: %s", err)
-
     @Slot(object)
     def _on_metrics_result(self, metrics) -> None:
-        self._metrics_poll_in_flight = False
         if metrics.ram_total_gb > 0:
             self._lbl_ram.setText(
                 f"RAM: {metrics.ram_used_gb:.1f} / {metrics.ram_total_gb:.1f} GB "
@@ -515,11 +522,11 @@ class MainWindow(QMainWindow):
         if gpu.vram_total_gb > 0:
             pct = gpu.vram_percent
             if pct > 90:
-                color = "#c62828"
+                color = COLOR_ERROR
             elif pct > 75:
-                color = "#f57f17"
+                color = COLOR_WARNING
             else:
-                color = "#2e7d32"
+                color = COLOR_SUCCESS
             self._lbl_vram.setText(
                 f'VRAM: <span style="color:{color}"><b>{gpu.vram_used_gb:.1f}</b></span>'
                 f" / {gpu.vram_total_gb:.1f} GB ({pct:.0f}%)"
@@ -581,13 +588,13 @@ class MainWindow(QMainWindow):
     def _set_dictation_state(self, state: DictationState) -> None:
         self._dictation_state = state
         color_map = {
-            DictationState.IDLE: "#424242",
-            DictationState.RECORDING: "#c62828",
-            DictationState.PROCESSING: "#f57f17",
-            DictationState.SUCCESS: "#2e7d32",
-            DictationState.ERROR: "#c62828",
+            DictationState.IDLE: COLOR_IDLE,
+            DictationState.RECORDING: COLOR_ERROR,
+            DictationState.PROCESSING: COLOR_WARNING,
+            DictationState.SUCCESS: COLOR_SUCCESS,
+            DictationState.ERROR: COLOR_ERROR,
         }
-        color = color_map.get(state, "#424242")
+        color = color_map.get(state, COLOR_IDLE)
         self._lbl_dictation_state.setText(
             f'State: <span style="color:{color}"><b>{state.value}</b></span>'
         )
@@ -623,13 +630,13 @@ class MainWindow(QMainWindow):
 
         # Pause NVML polling — concurrent driver calls can
         # deadlock against CUDA kernel launches in generate().
-        self._metrics_timer.stop()
+        self._res_monitor.stop()
 
         # Wait for any in-flight metrics poll to finish before dispatching
         # the transcription worker (avoids NVML / CUDA overlap).
         import time as _time
         _deadline = _time.monotonic() + 2.0
-        while self._metrics_poll_in_flight and _time.monotonic() < _deadline:
+        while self._res_monitor.is_in_flight and _time.monotonic() < _deadline:
             from PySide6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
             _time.sleep(0.05)
@@ -638,7 +645,7 @@ class MainWindow(QMainWindow):
         audio = self._recorder.get_raw_audio()
         if audio is None:
             self._log_ui("No audio recorded", error=True)
-            self._metrics_timer.start()
+            self._res_monitor.start()
             self._set_dictation_state(DictationState.IDLE)
             return
 
@@ -670,7 +677,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_transcription_result(self, text: str) -> None:
         """Handle transcription result — runs on MAIN THREAD (safe for clipboard)."""
-        self._metrics_timer.start()
+        self._res_monitor.start()
         text = str(text).strip()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -695,7 +702,7 @@ class MainWindow(QMainWindow):
             self._set_dictation_state(DictationState.SUCCESS)
 
         QTimer.singleShot(
-            1500,
+            STATE_RESET_IDLE_MS,
             lambda: self._set_dictation_state(DictationState.IDLE)
             if self._dictation_state in (DictationState.SUCCESS, DictationState.ERROR)
             else None,
@@ -703,13 +710,13 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_transcription_error(self, err: str) -> None:
-        self._metrics_timer.start()
+        self._res_monitor.start()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self._set_dictation_state(DictationState.ERROR)
         self._log_ui(f"Transcription error: {err}", error=True)
         self._add_history(ts, f"Error: {err}", success=False)
         QTimer.singleShot(
-            2000,
+            STATE_RESET_ERROR_MS,
             lambda: self._set_dictation_state(DictationState.IDLE)
             if self._dictation_state in (DictationState.SUCCESS, DictationState.ERROR)
             else None,
@@ -832,7 +839,7 @@ class MainWindow(QMainWindow):
 
         # Graceful shutdown without accepting close (we re-launch ourselves)
         self._loading_timer.stop()
-        self._metrics_timer.stop()
+        self._res_monitor.stop()
         self._hotkey_mgr.unregister()
         self._recorder.close_stream()
         self._engine.unload()
@@ -885,10 +892,6 @@ class MainWindow(QMainWindow):
 
     def nativeEvent(self, event_type, message):
         """Intercept Windows power-management broadcasts."""
-        WM_POWERBROADCAST = 0x0218
-        PBT_APMRESUMEAUTOMATIC = 0x0012
-        PBT_APMRESUMESUSPEND = 0x0007
-
         if event_type == b"windows_generic_MSG":
             try:
                 import ctypes.wintypes
@@ -899,9 +902,9 @@ class MainWindow(QMainWindow):
                     PBT_APMRESUMESUSPEND,
                 ):
                     now = time.time()
-                    if now - self._last_resume_time > 10:
+                    if now - self._last_resume_time > SYSTEM_RESUME_DEBOUNCE_S:
                         self._last_resume_time = now
-                        QTimer.singleShot(2000, self._on_system_resume)
+                        QTimer.singleShot(SYSTEM_RESUME_DELAY_MS, self._on_system_resume)
             except Exception:
                 log.debug("nativeEvent parsing failed", exc_info=True)
         return super().nativeEvent(event_type, message)
@@ -929,7 +932,7 @@ class MainWindow(QMainWindow):
         """Graceful shutdown."""
         self._log_ui("Shutting down…")
         self._loading_timer.stop()
-        self._metrics_timer.stop()
+        self._res_monitor.stop()
         self._hotkey_mgr.unregister()
         self._recorder.close_stream()
         self._engine.unload()

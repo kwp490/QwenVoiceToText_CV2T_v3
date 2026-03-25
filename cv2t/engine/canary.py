@@ -19,7 +19,7 @@ import numpy as np
 import soundfile as sf
 
 from .audio_utils import chunk_audio, ensure_16khz, stitch_transcripts
-from .base import _cleanup_gpu_memory
+from .base import SpeechEngine, _cleanup_gpu_memory
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _get_temp_dir() -> str:
     return d
 
 
-class CanaryEngine:
+class CanaryEngine(SpeechEngine):
     """NeMo-based Canary Qwen 2.5B speech engine.
 
     All PyTorch / CUDA operations are pinned to a single dedicated thread
@@ -49,7 +49,7 @@ class CanaryEngine:
     """
 
     def __init__(self) -> None:
-        self._model = None
+        super().__init__()
         self._device: str = "cuda"
 
         # Dedicated inference thread — all CUDA / PyTorch work runs here.
@@ -89,10 +89,6 @@ class CanaryEngine:
     @property
     def name(self) -> str:
         return "canary"
-
-    @property
-    def is_loaded(self) -> bool:
-        return self._model is not None
 
     @property
     def vram_estimate_gb(self) -> float:
@@ -234,23 +230,19 @@ class CanaryEngine:
                 pass
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
-        """Transcribe audio — delegates to the dedicated inference thread."""
-        return self._run_on_inf_thread(self._transcribe_impl, audio, sample_rate)
-
-    def _transcribe_impl(self, audio: np.ndarray, sample_rate: int) -> str:
-        """Transcribe audio with mandatory chunking (inference thread).
-
-        Accepts arbitrary-length 1D float32 mono audio at any sample rate.
-        """
-        import torch
-
+        """Resample then delegate to the dedicated inference thread."""
+        # Base-class guard + resampling on the calling thread (cheap),
+        # then heavy inference on the dedicated CUDA thread.
         if self._model is None:
-            raise RuntimeError("Canary model not loaded")
-
-        # Resample to 16 kHz
+            raise RuntimeError(f"{self.name} model not loaded")
         audio_16k = ensure_16khz(audio, sample_rate)
         if len(audio_16k) == 0:
             return ""
+        return self._run_on_inf_thread(self._transcribe_impl, audio_16k)
+
+    def _transcribe_impl(self, audio_16k: np.ndarray) -> str:
+        """Transcribe 16 kHz audio with mandatory chunking (inference thread)."""
+        import torch
 
         # Chunk audio (30s chunks, 2s overlap — well within 40s limit)
         chunks = chunk_audio(audio_16k, 16000, _MAX_CHUNK_SECONDS, _OVERLAP_SECONDS)
@@ -329,8 +321,4 @@ class CanaryEngine:
 
     def _unload_impl(self) -> None:
         """Release model and free VRAM (inference thread)."""
-        if self._model is not None:
-            del self._model
-            self._model = None
-        _cleanup_gpu_memory()
-        log.info("Canary model unloaded")
+        self._release_model()

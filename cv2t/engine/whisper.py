@@ -16,7 +16,7 @@ import numpy as np
 from huggingface_hub import snapshot_download
 
 from .audio_utils import ensure_16khz
-from .base import _cleanup_gpu_memory
+from .base import SpeechEngine, _cleanup_gpu_memory
 
 log = logging.getLogger(__name__)
 
@@ -162,19 +162,15 @@ def _patch_suppressed_tokens() -> None:
     log.info("Patched faster_whisper get_suppressed_tokens to filter None values")
 
 
-class WhisperEngine:
+class WhisperEngine(SpeechEngine):
     """Faster-whisper (CTranslate2) speech engine."""
 
     def __init__(self) -> None:
-        self._model = None
+        super().__init__()
 
     @property
     def name(self) -> str:
         return "whisper"
-
-    @property
-    def is_loaded(self) -> bool:
-        return self._model is not None
 
     @property
     def vram_estimate_gb(self) -> float:
@@ -262,16 +258,8 @@ class WhisperEngine:
 
         log.info("Whisper model loaded")
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
-        """Transcribe audio. Accepts arbitrary-length 1D float32 mono."""
-        if self._model is None:
-            raise RuntimeError("Whisper model not loaded")
-
-        # Resample to 16 kHz
-        audio_16k = ensure_16khz(audio, sample_rate)
-        if len(audio_16k) == 0:
-            return ""
-
+    def _transcribe_impl(self, audio_16k: np.ndarray) -> str:
+        """Transcribe 16 kHz audio via faster-whisper."""
         # CTranslate2 requires a contiguous float32 array — numpy views/slices
         # from trim_silence can be non-contiguous and cause native crashes.
         audio_16k = np.ascontiguousarray(audio_16k, dtype=np.float32)
@@ -301,8 +289,4 @@ class WhisperEngine:
 
     def unload(self) -> None:
         """Release model and free GPU memory."""
-        if self._model is not None:
-            del self._model
-            self._model = None
-        _cleanup_gpu_memory()
-        log.info("Whisper model unloaded")
+        self._release_model()
