@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from .audio import AudioRecorder
 from .config import Settings
-from .engine import ENGINES
+from .engine import ENGINES, get_available_engines
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,13 @@ class SettingsDialog(QDialog):
         self._engine_combo = QComboBox()
         for name in ENGINES:
             self._engine_combo.addItem(name)
+        # Disable engine selection when only one engine has model files installed
+        available = get_available_engines(self.settings.model_path)
+        if len(available) <= 1:
+            self._engine_combo.setEnabled(False)
+            self._engine_combo.setToolTip(
+                "Only one engine is installed. Install both engines to switch."
+            )
         engine_form.addRow("Engine:", self._engine_combo)
 
         model_row = QHBoxLayout()

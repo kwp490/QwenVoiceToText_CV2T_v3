@@ -44,11 +44,6 @@ class SpeechEngine(Protocol):
         ...
 
 
-def safe_unload(model_attr_name: str = "_model"):
-    """Decorator factory — not used at runtime; see unload() implementations."""
-    pass
-
-
 def _cleanup_gpu_memory() -> None:
     """Best-effort GPU memory cleanup."""
     gc.collect()

@@ -148,6 +148,26 @@ class CanaryEngine:
             _dvc.dep_version_check = lambda pkg, hint=None: None
             sys.modules["transformers.dependency_versions_check"] = _dvc
 
+        # Suppress noisy one-time warnings from NeMo's import chain and
+        # model loading: Megatron/Apex fallback, pydub/ffmpeg, torch
+        # distributed redirects, triton, torch_dtype deprecation,
+        # generation_config defaults.  All harmless for inference.
+        import warnings
+        for _pat in (
+            r"Couldn't find ffmpeg",
+            r"Redirects are currently not supported",
+            r"triton not found",
+            r"torch_dtype.*deprecated",
+            r"generation_config.*default values",
+        ):
+            warnings.filterwarnings("ignore", message=_pat)
+        _noisy_loggers = (
+            "nemo", "nemo_logger", "nemo.utils.nemo_logging",
+            "transformers", "transformers.generation.configuration_utils",
+        )
+        for _name in _noisy_loggers:
+            logging.getLogger(_name).setLevel(logging.ERROR)
+
         from nemo.collections.speechlm2.models import SALM
 
         self._device = device
@@ -181,6 +201,10 @@ class CanaryEngine:
 
         # Warmup with dummy inference for CUDA kernel compilation
         self._warmup()
+
+        # Restore third-party log levels so real warnings are still visible
+        for _name in _noisy_loggers:
+            logging.getLogger(_name).setLevel(logging.WARNING)
 
     def _warmup(self) -> None:
         """Run a dummy inference to compile CUDA kernels."""
@@ -256,7 +280,7 @@ class CanaryEngine:
 
             duration = len(chunk) / 16000
             max_tokens = max(64, int(duration * 20))
-            log.info("chunk %.1fs → max_tokens=%d, file=%s", duration, max_tokens, tmp_path)
+            log.info("chunk %.1fs -> max_tokens=%d, file=%s", duration, max_tokens, tmp_path)
 
             conversation = [[{
                 "role": "user",
@@ -286,12 +310,22 @@ class CanaryEngine:
 
     def unload(self) -> None:
         """Release model, free VRAM, and stop the inference thread."""
-        # Run the actual CUDA cleanup on the inference thread.
-        if self._inf_thread.is_alive():
-            self._run_on_inf_thread(self._unload_impl)
-            # Send shutdown sentinel and join the thread.
-            self._inf_queue.put(None)
-            self._inf_thread.join(timeout=5)
+        if not self._inf_thread.is_alive():
+            return
+        # Drain any pending items so the sentinel is processed promptly.
+        while not self._inf_queue.empty():
+            try:
+                self._inf_queue.get_nowait()
+            except queue.Empty:
+                break
+        # Submit the cleanup, then the sentinel.  Use a short timeout so
+        # we don't block forever if generate() is still running (the
+        # daemon thread will be killed at process exit anyway).
+        holder: dict = {"done": threading.Event(), "value": None, "error": None}
+        self._inf_queue.put((self._unload_impl, (), {}, holder))
+        self._inf_queue.put(None)          # shutdown sentinel
+        holder["done"].wait(timeout=5)
+        self._inf_thread.join(timeout=2)
 
     def _unload_impl(self) -> None:
         """Release model and free VRAM (inference thread)."""

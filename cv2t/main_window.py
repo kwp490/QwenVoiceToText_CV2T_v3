@@ -39,7 +39,7 @@ import numpy as np
 
 from .audio import AudioRecorder, play_beep
 from .clipboard import set_clipboard_text, simulate_paste
-from .config import Settings
+from .config import DEFAULT_LOG_DIR, Settings
 from .engine import ENGINES
 from .gpu_monitor import get_system_metrics
 from .hotkeys import HotkeyManager
@@ -239,11 +239,8 @@ class MainWindow(QMainWindow):
         self._btn_reload.clicked.connect(self._on_reload_model)
         self._btn_validate = QPushButton("Validate")
         self._btn_validate.clicked.connect(self._on_validate)
-        self._btn_diagnostics = QPushButton("Copy Diagnostics")
-        self._btn_diagnostics.clicked.connect(self._on_copy_diagnostics)
         btn_row.addWidget(self._btn_reload)
         btn_row.addWidget(self._btn_validate)
-        btn_row.addWidget(self._btn_diagnostics)
         btn_row.addStretch()
         eg_layout.addLayout(btn_row)
 
@@ -329,10 +326,13 @@ class MainWindow(QMainWindow):
         btn_settings.clicked.connect(self._on_open_settings)
         btn_clear = QPushButton("\U0001f5d1  Clear Logs && History")
         btn_clear.clicked.connect(self._on_clear_logs_and_history)
+        btn_copy_logs = QPushButton("\U0001f4cb  Copy Logs")
+        btn_copy_logs.clicked.connect(self._on_copy_logs)
         btn_quit = QPushButton("Quit")
         btn_quit.clicked.connect(self.close)
         bottom_row.addWidget(btn_settings)
         bottom_row.addWidget(btn_clear)
+        bottom_row.addWidget(btn_copy_logs)
         bottom_row.addStretch()
         bottom_row.addWidget(btn_quit)
         root.addLayout(bottom_row)
@@ -574,46 +574,6 @@ class MainWindow(QMainWindow):
             self._set_model_status(ModelStatus.ERROR)
             self._log_ui(f"Validation failed: {msg}", error=True)
 
-    # ── Diagnostics ───────────────────────────────────────────────────────────
-
-    @Slot()
-    def _on_copy_diagnostics(self) -> None:
-        def _collect():
-            import sys
-            metrics = get_system_metrics()
-            lines = [
-                "=== CV2T Diagnostics ===",
-                f"Engine: {self._engine.name}",
-                f"Model status: {self._model_status.value}",
-                f"Model path: {self.settings.model_path}",
-                f"Device: {self.settings.device}",
-                f"Python: {sys.version}",
-                f"GPU: {metrics.gpu.name or 'N/A'}",
-                f"VRAM: {metrics.gpu.vram_used_gb:.1f}/{metrics.gpu.vram_total_gb:.1f} GB",
-                f"RAM: {metrics.ram_used_gb:.1f}/{metrics.ram_total_gb:.1f} GB",
-            ]
-            # Package versions
-            try:
-                import cv2t
-                lines.append(f"CV2T version: {cv2t.__version__}")
-            except Exception:
-                pass
-            try:
-                import PySide6
-                lines.append(f"PySide6: {PySide6.__version__}")
-            except Exception:
-                pass
-            return "\n".join(lines)
-
-        worker = Worker(_collect)
-        worker.signals.result.connect(self._on_diagnostics_ready)
-        self._pool.start(worker)
-
-    @Slot(object)
-    def _on_diagnostics_ready(self, diag: str) -> None:
-        set_clipboard_text(str(diag))
-        self._log_ui("Diagnostics copied to clipboard")
-
     # ═════════════════════════════════════════════════════════════════════════
     # DICTATION
     # ═════════════════════════════════════════════════════════════════════════
@@ -780,11 +740,19 @@ class MainWindow(QMainWindow):
         self._delete_log_files()
         self._log_ui("Logs and history cleared")
 
+    @Slot()
+    def _on_copy_logs(self) -> None:
+        """Copy all visible log text to the clipboard."""
+        text = self._log_text.toPlainText()
+        if text:
+            set_clipboard_text(text)
+            self._log_ui("Logs copied to clipboard")
+        else:
+            self._log_ui("No log text to copy")
+
     def _delete_log_files(self) -> None:
         """Remove the rotating log files from disk."""
-        log_dir = Path(
-            os.environ.get("APPDATA", str(Path.home()))
-        ) / "CV2T"
+        log_dir = DEFAULT_LOG_DIR
         for pattern in ("cv2t.log", "cv2t.log.*"):
             for f in log_dir.glob(pattern):
                 try:
@@ -871,9 +839,10 @@ class MainWindow(QMainWindow):
 
         release_single_instance_mutex()
 
-        # Re-launch via the same executable
+        # Re-launch via the same executable, skipping the engine prompt
+        # since the user already chose the engine in settings.
         subprocess.Popen(
-            [sys.executable, "-m", "cv2t"],
+            [sys.executable, "-m", "cv2t", "--skip-engine-prompt"],
             cwd=os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"),
         )
 
@@ -964,6 +933,9 @@ class MainWindow(QMainWindow):
         self._hotkey_mgr.unregister()
         self._recorder.close_stream()
         self._engine.unload()
+        # Wait for any in-flight thread-pool workers (transcription, model
+        # load, metrics poll) to finish so the process can exit cleanly.
+        self._pool.waitForDone(5000)
         if self.settings.clear_logs_on_exit:
             self._delete_log_files()
         event.accept()

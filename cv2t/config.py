@@ -41,7 +41,7 @@ class Settings:
     hotkey_start: str = "ctrl+alt+p"
     hotkey_stop: str = "ctrl+alt+l"
     hotkey_quit: str = "ctrl+alt+q"
-    clear_logs_on_exit: bool = False
+    clear_logs_on_exit: bool = True
 
     # ── Audio ─────────────────────────────────────────────────────────────────
     mic_device_index: int = -1           # -1 = system default

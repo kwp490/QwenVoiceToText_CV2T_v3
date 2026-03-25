@@ -105,6 +105,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="store_true", help="Print version and exit"
     )
+    parser.add_argument(
+        "--skip-engine-prompt",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,  # internal: skip engine selection after settings-driven restart
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -281,10 +287,74 @@ def main() -> int:
     app.setOrganizationName("CV2T")
 
     settings = Settings.load()
+
+    # If more than one engine + model is installed, let the user choose
+    # which engine to load before the main window opens.
+    # Skip when restarting after an engine change in settings (the user
+    # already made their choice and it is persisted).
+    if not args.skip_engine_prompt:
+        from .engine import get_available_engines
+        available = get_available_engines(settings.model_path)
+        if len(available) > 1:
+            chosen = _ask_engine_selection(available, settings.engine)
+            if chosen is None:
+                # User closed the dialog — exit gracefully
+                return 0
+            if chosen != settings.engine:
+                settings.engine = chosen
+                settings.save()
+
     window = MainWindow(settings)
     window.show()
 
     return app.exec()
+
+
+def _ask_engine_selection(available: list, current_default: str) -> str | None:
+    """Show a dialog asking the user which engine to load.
+
+    Returns the chosen engine name, or *None* if the dialog was dismissed.
+    """
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox
+    from PySide6.QtCore import Qt
+
+    _ENGINE_LABELS = {
+        "whisper": "Whisper  (CTranslate2 — ~3 GB VRAM, faster startup)",
+        "canary": "Canary  (NeMo/PyTorch — ~5 GB VRAM, higher accuracy)",
+    }
+
+    dlg = QDialog()
+    dlg.setWindowTitle("CV2T — Select Engine")
+    dlg.setMinimumWidth(420)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+
+    layout = QVBoxLayout(dlg)
+    layout.addWidget(QLabel(
+        "Multiple speech engines are installed.\n"
+        "Choose which engine to load:"
+    ))
+
+    combo = QComboBox()
+    for name in available:
+        label = _ENGINE_LABELS.get(name) or name
+        combo.addItem(label, userData=name)
+    # Pre-select the current default if it's in the list
+    default_idx = combo.findData(current_default)
+    if default_idx >= 0:
+        combo.setCurrentIndex(default_idx)
+
+    layout.addWidget(combo)
+
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    )
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    layout.addWidget(buttons)
+
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        return combo.currentData()
+    return None
 
 
 if __name__ == "__main__":

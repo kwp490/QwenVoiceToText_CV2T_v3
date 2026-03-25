@@ -64,7 +64,7 @@ class HotkeyManager(QObject):
             self._enabled = False
 
     def unregister(self) -> None:
-        """Remove all hotkey hooks."""
+        """Remove all hotkey hooks and stop the listener thread."""
         if not self._enabled:
             return
         try:
@@ -72,6 +72,9 @@ class HotkeyManager(QObject):
 
             for hook in self._hooks:
                 keyboard.remove_hotkey(hook)
+            # unhook_all() tears down the non-daemon listener thread that
+            # keyboard starts internally; without it the process hangs.
+            keyboard.unhook_all()
         except Exception:
             log.warning("Error unhooking hotkeys", exc_info=True)
         self._hooks.clear()
