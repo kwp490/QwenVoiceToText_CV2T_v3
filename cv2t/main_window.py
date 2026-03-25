@@ -175,7 +175,6 @@ class MainWindow(QMainWindow):
         self._model_status = ModelStatus.NOT_LOADED
         self._model_load_start: float = 0.0
         self._metrics_poll_in_flight: bool = False
-        self._keepalive_in_flight: bool = False
         self._last_resume_time: float = 0.0
 
         # ── Build UI ─────────────────────────────────────────────────────────
@@ -379,11 +378,6 @@ class MainWindow(QMainWindow):
         self._metrics_timer.timeout.connect(self._poll_metrics)
         self._metrics_timer.start(5000)
 
-        # CUDA keepalive timer — prevents GPU power-state context loss
-        self._keepalive_timer = QTimer(self)
-        self._keepalive_timer.timeout.connect(self._keepalive_tick)
-        self._keepalive_timer.setInterval(30_000)
-
     # ═════════════════════════════════════════════════════════════════════════
     # HOTKEYS
     # ═════════════════════════════════════════════════════════════════════════
@@ -455,14 +449,10 @@ class MainWindow(QMainWindow):
         self._set_model_status(ModelStatus.READY)
         self._lbl_engine.setText(f"Engine: {self._engine.name}")
         self._log_ui(f"Model loaded in {elapsed:.1f}s")
-        # Start CUDA keepalive for engines that support it (e.g. Canary)
-        if hasattr(self._engine, "keepalive"):
-            self._keepalive_timer.start()
 
     @Slot(str)
     def _on_model_load_error(self, err: str) -> None:
         self._loading_timer.stop()
-        self._keepalive_timer.stop()
         self._set_model_status(ModelStatus.ERROR)
         self._log_ui(f"Model load failed: {err}", error=True)
 
@@ -509,25 +499,6 @@ class MainWindow(QMainWindow):
     def _on_metrics_error(self, err: str) -> None:
         self._metrics_poll_in_flight = False
         log.error("Metrics worker error: %s", err)
-
-    # ── CUDA keepalive ────────────────────────────────────────────────────────
-
-    def _keepalive_tick(self) -> None:
-        """Dispatch a lightweight CUDA ping — skip if busy."""
-        if self._keepalive_in_flight:
-            return
-        if self._dictation_state == DictationState.PROCESSING:
-            return
-        if not hasattr(self._engine, "keepalive"):
-            return
-        self._keepalive_in_flight = True
-        worker = Worker(self._engine.keepalive)
-        worker.signals.finished.connect(self._on_keepalive_done)
-        self._pool.start(worker)
-
-    @Slot()
-    def _on_keepalive_done(self) -> None:
-        self._keepalive_in_flight = False
 
     @Slot(object)
     def _on_metrics_result(self, metrics) -> None:
@@ -690,10 +661,9 @@ class MainWindow(QMainWindow):
         play_beep((900, 500))   # descending chirp → "done"
         self._set_dictation_state(DictationState.PROCESSING)
 
-        # Pause NVML polling and keepalive — concurrent driver/CUDA calls
-        # can deadlock against CUDA kernel launches in generate().
+        # Pause NVML polling — concurrent driver calls can
+        # deadlock against CUDA kernel launches in generate().
         self._metrics_timer.stop()
-        self._keepalive_timer.stop()
 
         # Wait for any in-flight metrics poll to finish before dispatching
         # the transcription worker (avoids NVML / CUDA overlap).
@@ -709,8 +679,6 @@ class MainWindow(QMainWindow):
         if audio is None:
             self._log_ui("No audio recorded", error=True)
             self._metrics_timer.start()
-            if hasattr(self._engine, "keepalive"):
-                self._keepalive_timer.start()
             self._set_dictation_state(DictationState.IDLE)
             return
 
@@ -743,8 +711,6 @@ class MainWindow(QMainWindow):
     def _on_transcription_result(self, text: str) -> None:
         """Handle transcription result — runs on MAIN THREAD (safe for clipboard)."""
         self._metrics_timer.start()
-        if hasattr(self._engine, "keepalive"):
-            self._keepalive_timer.start()
         text = str(text).strip()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -778,8 +744,6 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_transcription_error(self, err: str) -> None:
         self._metrics_timer.start()
-        if hasattr(self._engine, "keepalive"):
-            self._keepalive_timer.start()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self._set_dictation_state(DictationState.ERROR)
         self._log_ui(f"Transcription error: {err}", error=True)
@@ -901,7 +865,6 @@ class MainWindow(QMainWindow):
         # Graceful shutdown without accepting close (we re-launch ourselves)
         self._loading_timer.stop()
         self._metrics_timer.stop()
-        self._keepalive_timer.stop()
         self._hotkey_mgr.unregister()
         self._recorder.close_stream()
         self._engine.unload()
@@ -998,7 +961,6 @@ class MainWindow(QMainWindow):
         self._log_ui("Shutting down…")
         self._loading_timer.stop()
         self._metrics_timer.stop()
-        self._keepalive_timer.stop()
         self._hotkey_mgr.unregister()
         self._recorder.close_stream()
         self._engine.unload()

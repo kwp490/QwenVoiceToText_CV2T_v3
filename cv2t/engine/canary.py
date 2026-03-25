@@ -68,6 +68,12 @@ class CanaryEngine:
         # the cached graph shape no longer matches.
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
+        # Force synchronous CUDA kernel execution.  Blackwell (sm_120)
+        # with NeMo SALM can hang on subsequent generate() calls when
+        # async-launched kernels silently corrupt state.  The ~10-20%
+        # throughput cost is negligible for a voice-to-text app.
+        os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+
         import torch
 
         torch.compiler.disable(recursive=True)
@@ -157,24 +163,6 @@ class CanaryEngine:
             except OSError:
                 pass
 
-    def keepalive(self) -> None:
-        """Ping CUDA to prevent GPU power-state context loss on idle.
-
-        Windows may transition the GPU to a low-power state after extended
-        inactivity, invalidating the CUDA context.  ``synchronize()``
-        touches the CUDA runtime (waits on the default stream) without
-        allocating memory or accessing model tensors — thread-safe and
-        lightweight when the queue is empty.
-        """
-        if self._model is None:
-            return
-        try:
-            import torch
-
-            torch.cuda.synchronize()
-        except Exception as exc:
-            log.warning("CUDA keepalive failed: %s", exc)
-
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         """Transcribe audio with mandatory 40s chunking.
 
@@ -201,6 +189,12 @@ class CanaryEngine:
             texts.append(text)
 
         result = stitch_transcripts(texts)
+
+        # Release Python references to transient CUDA tensors from the
+        # generate() call.  Without this, dead tensor objects accumulate
+        # and can confuse PyTorch's caching allocator on subsequent calls.
+        gc.collect()
+
         return result
 
     def _transcribe_chunk(self, chunk: np.ndarray, torch_module) -> str:
