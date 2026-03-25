@@ -12,8 +12,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import sys
+
+
+_WHISPER_MODEL_ID = "large-v3-turbo"
+_WHISPER_REPO_ID = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+_WHISPER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
+_WHISPER_ALLOW_PATTERNS = [
+    "config.json",
+    "preprocessor_config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.*",
+]
 
 
 def main() -> int:
@@ -38,22 +51,109 @@ def main() -> int:
     target_dir = args.target_dir or default_dir
     os.makedirs(target_dir, exist_ok=True)
 
-    from huggingface_hub import snapshot_download
+    if args.engine == "whisper":
+        return _download_whisper(target_dir)
+    elif args.engine == "canary":
+        return _download_canary(target_dir)
+    return 1
 
-    if args.engine == "canary":
-        repo_id = "onnx-community/canary-qwen-2.5b-ONNX"
-    elif args.engine == "whisper":
-        repo_id = "Systran/faster-whisper-large-v3-turbo"
-    else:
+
+def _whisper_model_ready(target_dir: str) -> bool:
+    """Return True if the whisper model files already exist locally."""
+    return all(
+        os.path.isfile(os.path.join(target_dir, f))
+        for f in _WHISPER_REQUIRED_FILES
+    )
+
+
+def _print_whisper_runtime_diagnostics() -> None:
+    """Print runtime details for the active faster-whisper installation."""
+    try:
+        import faster_whisper
+        import faster_whisper.utils as faster_whisper_utils
+
+        models = getattr(faster_whisper_utils, "_MODELS", None)
+        resolved_repo = None
+        if isinstance(models, dict):
+            resolved_repo = models.get(_WHISPER_MODEL_ID)
+
+        print(f"faster_whisper.__file__ = {getattr(faster_whisper, '__file__', '<unknown>')}")
+        print(
+            "faster_whisper.utils.__file__ = "
+            f"{getattr(faster_whisper_utils, '__file__', '<unknown>')}"
+        )
+        print(f"_MODELS['{_WHISPER_MODEL_ID}'] = {resolved_repo!r}")
+    except Exception as exc:
+        print(f"WARNING: Unable to inspect faster-whisper runtime diagnostics: {exc}")
+
+
+def _download_whisper(target_dir: str) -> int:
+    if _whisper_model_ready(target_dir):
+        print(f"Whisper model already present in {target_dir} — skipping download.")
+        return 0
+
+    _print_whisper_runtime_diagnostics()
+    print(f"Downloading Whisper model '{_WHISPER_MODEL_ID}' to {target_dir} ...")
+    print(f"Resolved download repo: {_WHISPER_REPO_ID}")
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        all_files = list_repo_files(repo_id=_WHISPER_REPO_ID)
+        files = [
+            f for f in all_files
+            if any(fnmatch.fnmatch(f, p) for p in _WHISPER_ALLOW_PATTERNS)
+        ]
+        total = len(files)
+        print(f"  {total} file(s) to download", flush=True)
+        for i, filename in enumerate(files, 1):
+            print(f"  [{i}/{total}] {filename}", flush=True)
+            hf_hub_download(
+                repo_id=_WHISPER_REPO_ID,
+                filename=filename,
+                local_dir=target_dir,
+            )
+        print(f"Download complete — model stored at {target_dir}")
+        return 0
+    except ValueError as exc:
+        print(f"ERROR: Invalid model name '{_WHISPER_MODEL_ID}': {exc}")
+        return 1
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "Repository Not Found" in msg:
+            print(
+                "ERROR: Model repo not found or access denied for "
+                f"'{_WHISPER_REPO_ID}': {exc}"
+            )
+        else:
+            print(f"ERROR: Download failed (network or server issue): {exc}")
         return 1
 
+
+def _download_canary(target_dir: str) -> int:
+    """Download Canary ONNX model via huggingface_hub."""
+    repo_id = "onnx-community/canary-qwen-2.5b-ONNX"
     print(f"Downloading {repo_id} to {target_dir}...")
     try:
-        snapshot_download(repo_id=repo_id, local_dir=target_dir)
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        files = list(list_repo_files(repo_id=repo_id))
+        total = len(files)
+        print(f"  {total} file(s) to download", flush=True)
+        for i, filename in enumerate(files, 1):
+            print(f"  [{i}/{total}] {filename}", flush=True)
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=target_dir,
+            )
         print("Download complete.")
         return 0
     except Exception as exc:
-        print(f"ERROR: {exc}")
+        msg = str(exc)
+        if "401" in msg or "Repository Not Found" in msg:
+            print(f"ERROR: Repo '{repo_id}' not found or access denied: {exc}")
+        else:
+            print(f"ERROR: Download failed: {exc}")
         return 1
 
 

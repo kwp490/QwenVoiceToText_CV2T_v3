@@ -138,7 +138,7 @@
        )
    ```
 
-   **Model name**: Use `"large-v3-turbo"` as the default model identifier (the library's built-in name). This is well-documented in faster-whisper's own API. Avoid referencing specific HuggingFace repo paths like `Systran/faster-whisper-large-v3-turbo` unless the user explicitly configures a custom repo — the library resolves the correct repo automatically from the model name.
+   **Model name**: Use `"large-v3-turbo"` as the default model identifier (the library's built-in name). This is well-documented in faster-whisper's own API. Avoid hardcoding HuggingFace repo paths — the library resolves `large-v3-turbo` to `mobiuslabsgmbh/faster-whisper-large-v3-turbo` automatically.
 
    **GPU dependency matrix** (document in README and validate in CI):
    - faster-whisper/CTranslate2 GPU requires **CUDA 12.x** and **cuDNN 9.x**
@@ -260,7 +260,7 @@
 
 18. **Model downloader** — Create `download_model.py` at root (also callable via `cv2t download-model` CLI): supports both Canary and Whisper downloads. CLI: `--engine canary|whisper --target-dir "%LOCALAPPDATA%\CV2T\models"`.
     - **Canary target**: `onnx-community/canary-qwen-2.5b-ONNX` via `huggingface_hub.snapshot_download()`. This is an open model (CC-BY-4.0) — no authentication required.
-    - **Whisper target**: `Systran/faster-whisper-large-v3-turbo` via `huggingface_hub.snapshot_download()`. Open model — no authentication required.
+    - **Whisper target**: `large-v3-turbo` via `faster_whisper.utils.download_model()` (resolves to `mobiuslabsgmbh/faster-whisper-large-v3-turbo`). Open model — no authentication required.
     - **Default target directory**: `%LOCALAPPDATA%\CV2T\models` (user-writable, no admin required).
     - **No authentication needed**: Both models are open and publicly accessible. No `--hf-token` argument, no `HF_TOKEN` environment variable, and no `huggingface-cli login` prompts.
 

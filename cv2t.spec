@@ -19,6 +19,14 @@ try:
 except Exception:
     pass
 
+# Collect cuBLAS and cuDNN DLLs from nvidia pip packages
+# (cublas64_12.dll, cudnn*.dll etc. live in site-packages/nvidia/*/bin/)
+for _nvidia_pkg in ('nvidia.cublas', 'nvidia.cudnn', 'nvidia.cuda_runtime'):
+    try:
+        binaries += collect_dynamic_libs(_nvidia_pkg)
+    except Exception:
+        pass
+
 a = Analysis(
     ['cv2t/__main__.py'],
     pathex=[],

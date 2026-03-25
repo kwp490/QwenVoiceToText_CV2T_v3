@@ -95,7 +95,7 @@ Hotkeys are configurable in Settings.
 
 | | Canary (ONNX) | Whisper (CTranslate2) |
 |---|---|---|
-| **Model** | onnx-community/canary-qwen-2.5b-ONNX | Systran/faster-whisper-large-v3-turbo |
+| **Model** | onnx-community/canary-qwen-2.5b-ONNX | large-v3-turbo (via faster-whisper) |
 | **VRAM** | ~5 GB | ~3 GB |
 | **Accuracy** | Excellent | Very good |
 | **Speed** | Fast | Very fast |

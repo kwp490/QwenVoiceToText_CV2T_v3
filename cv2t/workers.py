@@ -48,7 +48,7 @@ class Worker(QRunnable):
     def run(self) -> None:
         try:
             result = self.fn(*self.args, **self.kwargs)
-        except Exception as exc:
+        except BaseException as exc:
             tb = traceback.format_exc()
             log.error("Worker error: %s\n%s", exc, tb)
             self.signals.error.emit(str(exc))

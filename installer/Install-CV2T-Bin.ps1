@@ -1,10 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
-    Install CV2T binary (end-user path — Whisper-only prebuilt .exe).
+    Install CV2T binary (end-user path — prebuilt .exe).
 
 .DESCRIPTION
-    Extracts the prebuilt CV2T binary from a release zip, downloads the
-    Whisper model, and creates a desktop shortcut.
+    Extracts the prebuilt CV2T binary from a release zip, prompts the user
+    to select Whisper, Canary, or both engines, downloads the chosen model(s),
+    and creates a desktop shortcut.
 
     Requires Administrator elevation. Installs to C:\Program Files\CV2T\.
     Does NOT require Python, uv, or git.
@@ -34,19 +35,66 @@ $ModelsDir = "$env:LOCALAPPDATA\CV2T\models"
 $ExePath = "$InstallDir\cv2t.exe"
 
 function Write-Step($msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
+function Write-Already($msg) { Write-Host "  [SKIP] $msg" -ForegroundColor DarkGray }
+function Write-Ok($msg) { Write-Host "  [OK]   $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
+
+function Invoke-NativeCommand {
+    <# Run a native command, print indented output, and throw on failure. #>
+    param([string]$Label, [scriptblock]$Command)
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Command 2>&1
+        foreach ($line in $output) { Write-Host "  $line" }
+    } finally {
+        $ErrorActionPreference = $prevPref
+    }
+    if ($LASTEXITCODE -ne 0) { throw "$Label failed (exit code $LASTEXITCODE)" }
+}
+
+function Invoke-StreamingCommand {
+    <# Run a native command, streaming output line-by-line for real-time progress. #>
+    param([string]$Label, [scriptblock]$Command)
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command 2>&1 | ForEach-Object { Write-Host "  $_" }
+    } finally {
+        $ErrorActionPreference = $prevPref
+    }
+    if ($LASTEXITCODE -ne 0) { throw "$Label failed (exit code $LASTEXITCODE)" }
+}
 
 # ── WIN-01: Check NVIDIA GPU ─────────────────────────────────────────────────
 Write-Step "Checking for NVIDIA GPU..."
 try {
     $gpu = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null
     if ($gpu) {
-        Write-Host "  GPU detected: $($gpu.Trim())" -ForegroundColor Green
+        Write-Ok "GPU detected: $($gpu.Trim())"
     } else {
-        Write-Host "  WARNING: No NVIDIA GPU detected. GPU acceleration will not be available." -ForegroundColor Yellow
+        Write-Warn "No NVIDIA GPU detected. GPU acceleration will not be available."
     }
 } catch {
-    Write-Host "  WARNING: nvidia-smi not found. GPU acceleration may not be available." -ForegroundColor Yellow
+    Write-Warn "nvidia-smi not found. GPU acceleration may not be available."
 }
+
+# ── Engine selection ─────────────────────────────────────────────────────────
+Write-Step "Select speech engine(s) to install"
+Write-Host "  [1] Whisper only  (default - fast, lighter on VRAM)"
+Write-Host "  [2] Canary only   (NeMo/torch - higher accuracy, ~5 GB VRAM)"
+Write-Host "  [3] Both engines"
+Write-Host ""
+$engineChoice = Read-Host "  Enter choice [1/2/3] (default: 1)"
+switch ($engineChoice) {
+    '2'     { $installWhisper = $false; $installCanary = $true  }
+    '3'     { $installWhisper = $true;  $installCanary = $true  }
+    default { $installWhisper = $true;  $installCanary = $false }
+}
+$selectedNames = @()
+if ($installWhisper) { $selectedNames += 'whisper' }
+if ($installCanary)  { $selectedNames += 'canary' }
+Write-Ok "Selected engine(s): $($selectedNames -join ', ')"
 
 # ── Extract / copy files ─────────────────────────────────────────────────────
 Write-Step "Installing CV2T binary..."
@@ -71,10 +119,63 @@ if ($ZipPath -and (Test-Path $ZipPath)) {
     }
 }
 
-# ── Download Whisper model ───────────────────────────────────────────────────
-Write-Step "Downloading Whisper model..."
+# ── Download models ───────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
-& $ExePath download-model --engine whisper --target-dir $ModelsDir
+
+if ($installWhisper) {
+    Write-Step "Checking Whisper model..."
+    $whisperFiles = @("config.json", "model.bin", "tokenizer.json")
+    $whisperReady = $true
+    foreach ($f in $whisperFiles) {
+        if (-not (Test-Path (Join-Path $ModelsDir $f))) { $whisperReady = $false; break }
+    }
+    if ($whisperReady) {
+        Write-Already "Whisper model already present in $ModelsDir"
+    } else {
+        Write-Host "  Downloading Whisper model 'large-v3-turbo'..."
+        Write-Host "  Using repo mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+        Invoke-StreamingCommand 'Model download' { & $ExePath download-model --engine whisper --target-dir $ModelsDir }
+        Write-Ok "Whisper model downloaded to $ModelsDir"
+    }
+}
+
+if ($installCanary) {
+    Write-Step "Checking Canary model..."
+    $canaryDir = Join-Path $ModelsDir "canary"
+    if (Test-Path $canaryDir) {
+        Write-Already "Canary model already present in $canaryDir"
+    } else {
+        Write-Host "  Downloading Canary model..."
+        Invoke-StreamingCommand 'Canary model download' { & $ExePath download-model --engine canary --target-dir $ModelsDir }
+        Write-Ok "Canary model downloaded to $ModelsDir"
+    }
+}
+
+# ── Write default engine to settings ─────────────────────────────────────────
+Write-Step "Configuring default engine..."
+$settingsDir = "$env:APPDATA\CV2T"
+$settingsFile = Join-Path $settingsDir "settings.json"
+if (-not (Test-Path $settingsDir)) {
+    New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+}
+if ($installCanary -and -not $installWhisper) {
+    $defaultEngine = 'canary'
+} else {
+    $defaultEngine = 'whisper'
+}
+if (Test-Path $settingsFile) {
+    $cfg = Get-Content $settingsFile -Raw | ConvertFrom-Json
+}
+if (-not $cfg) {
+    $cfg = [pscustomobject]@{}
+}
+if (-not ($cfg.PSObject.Properties.Name -contains 'engine')) {
+    $cfg | Add-Member -NotePropertyName 'engine' -NotePropertyValue $defaultEngine
+} else {
+    $cfg.engine = $defaultEngine
+}
+$cfg | ConvertTo-Json -Depth 10 | Set-Content $settingsFile -Encoding UTF8
+Write-Ok "Default engine set to '$defaultEngine' in $settingsFile"
 
 # ── Set permissions ──────────────────────────────────────────────────────────
 Write-Step "Setting directory permissions..."
@@ -93,7 +194,7 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $ExePath
 $shortcut.WorkingDirectory = $InstallDir
-$shortcut.Description = "CV2T — Voice to Text"
+$shortcut.Description = "CV2T - Voice to Text"
 $shortcut.Save()
 
 # ── Windows Defender exclusions ──────────────────────────────────────────────

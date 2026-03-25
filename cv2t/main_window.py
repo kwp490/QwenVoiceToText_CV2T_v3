@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import numpy as np
+
 from .audio import AudioRecorder, play_beep
 from .clipboard import set_clipboard_text, simulate_paste
 from .config import Settings
@@ -671,6 +673,10 @@ class MainWindow(QMainWindow):
             trimmed, pct = trim_result
             if pct > 1:
                 log.info("Trimmed %.0f%% silence", pct)
+
+            # Contiguous copy — trim_silence returns a view/slice that can
+            # cause native-code crashes in CTranslate2 / CUDA.
+            trimmed = np.ascontiguousarray(trimmed, dtype=np.float32)
 
             # Transcribe in-process
             text = self._engine.transcribe(trimmed, self.settings.sample_rate)
