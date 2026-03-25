@@ -1,6 +1,6 @@
 $scripts = @(
-    'C:\Coding_Projects\QwenVoiceToText_CV2T_v2\installer\Install-CV2T-Source.ps1',
-    'C:\Coding_Projects\QwenVoiceToText_CV2T_v2\installer\Install-CV2T-Bin.ps1'
+    'C:\Coding_Projects\QwenVoiceToText_CV2T_v3\installer\Install-CV2T-Source.ps1',
+    'C:\Coding_Projects\QwenVoiceToText_CV2T_v3\installer\Install-CV2T-Bin.ps1'
 )
 foreach ($s in $scripts) {
     $tokens = $null

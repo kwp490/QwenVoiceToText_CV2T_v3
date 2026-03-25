@@ -67,32 +67,44 @@ def _get_host_ram() -> tuple[float, float, float]:
         return 0.0, 0.0, 0.0
 
 
+_nvml_handle = None
+_nvml_name: str = ""
+
+
 def _get_gpu_metrics() -> GpuMetrics:
-    """Query NVIDIA GPU via NVML (nvidia-ml-py)."""
+    """Query NVIDIA GPU via NVML (nvidia-ml-py).
+
+    NVML is initialised once and the handle is reused.  Repeated
+    nvmlInit/nvmlShutdown cycles grab the NVIDIA driver lock and can
+    deadlock against concurrent CUDA kernel launches.
+    """
+    global _nvml_handle, _nvml_name
     try:
         import pynvml
 
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        name = pynvml.nvmlDeviceGetName(handle)
-        if isinstance(name, bytes):
-            name = name.decode("utf-8")
-        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-        pynvml.nvmlShutdown()
+        if _nvml_handle is None:
+            pynvml.nvmlInit()
+            _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = pynvml.nvmlDeviceGetName(_nvml_handle)
+            _nvml_name = name.decode("utf-8") if isinstance(name, bytes) else name
+
+        mem = pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle)
+        temp = pynvml.nvmlDeviceGetTemperature(_nvml_handle, pynvml.NVML_TEMPERATURE_GPU)
 
         total_gb = mem.total / (1024 ** 3)
         used_gb = mem.used / (1024 ** 3)
         pct = (used_gb / total_gb * 100) if total_gb > 0 else 0
 
         return GpuMetrics(
-            name=name,
+            name=_nvml_name,
             vram_used_gb=used_gb,
             vram_total_gb=total_gb,
             vram_percent=pct,
             temperature_c=temp,
         )
     except Exception as exc:
+        # Handle lost after driver reset / sleep-wake — re-init next call
+        _nvml_handle = None
         log.debug("NVML query failed: %s", exc)
         return GpuMetrics()
 

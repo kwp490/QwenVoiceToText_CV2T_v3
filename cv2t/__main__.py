@@ -45,6 +45,17 @@ _MUTEX_NAME = "Global\\CV2TMutex"
 _mutex_handle = None
 
 
+def release_single_instance_mutex() -> None:
+    """Release the single-instance mutex so a restarted process can acquire it."""
+    global _mutex_handle
+    if _mutex_handle is not None:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_mutex_handle)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        _mutex_handle = None
+
+
 def _ensure_single_instance() -> bool:
     """Return True if this is the only running instance."""
     global _mutex_handle
@@ -64,10 +75,9 @@ def _ensure_single_instance() -> bool:
 # ── Logging ──────────────────────────────────────────────────────────────────
 
 def _setup_logging() -> None:
-    log_dir = os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")),
-        "CV2T",
-    )
+    from .config import DEFAULT_LOG_DIR
+
+    log_dir = str(DEFAULT_LOG_DIR)
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "cv2t.log")
 
@@ -108,7 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dl.add_argument(
         "--target-dir",
         default=None,
-        help="Directory to store models (default: %%LOCALAPPDATA%%\\CV2T\\models)",
+        help="Directory to store models (default: C:\\Program Files\\CV2T\\models)",
     )
 
     return parser
@@ -216,8 +226,8 @@ def _download_whisper(target_dir: str) -> int:
 
 
 def _download_canary(target_dir: str) -> int:
-    """Download Canary ONNX model via huggingface_hub."""
-    repo_id = "onnx-community/canary-qwen-2.5b-ONNX"
+    """Download Canary NeMo SALM model via huggingface_hub."""
+    repo_id = "nvidia/canary-qwen-2.5b"
     print(f"Downloading {repo_id} to {target_dir}...")
     try:
         from huggingface_hub import snapshot_download

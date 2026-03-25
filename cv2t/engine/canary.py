@@ -25,6 +25,18 @@ _MAX_CHUNK_SECONDS = 30.0
 _OVERLAP_SECONDS = 2.0
 
 
+def _get_temp_dir() -> str:
+    """Return a writable temp directory for transient WAV files.
+
+    Uses the user's TEMP directory rather than the install directory
+    to avoid Windows Defender real-time scanning and UAC issues under
+    C:\\Program Files.
+    """
+    d = os.path.join(tempfile.gettempdir(), "cv2t")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 class CanaryEngine:
     """NeMo-based Canary Qwen 2.5B speech engine."""
 
@@ -46,7 +58,44 @@ class CanaryEngine:
 
     def load(self, model_path: str, device: str = "cuda") -> None:
         """Load Canary model via NeMo SALM.from_pretrained()."""
+        import importlib.machinery
+        import sys
+        import types
+
+        # Disable torch.compile / Dynamo before importing torch.  NeMo/SALM
+        # can trigger compiled CUDA graphs that cache input shapes; the
+        # second generate() call with different audio length hangs because
+        # the cached graph shape no longer matches.
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+
         import torch
+
+        torch.compiler.disable(recursive=True)
+
+        # NeMo transitively imports wandb (via TTS helpers / accelerate) at
+        # module level.  wandb is not needed for inference and is often
+        # broken.  Install a stub package so the entire import chain
+        # succeeds, including importlib.util.find_spec("wandb") checks.
+        if "wandb" not in sys.modules:
+            _wandb = types.ModuleType("wandb")
+            _wandb.__spec__ = importlib.machinery.ModuleSpec("wandb", None)
+            _wandb.__path__ = []
+            _wandb.__package__ = "wandb"
+            _wandb.__version__ = "0.0.0"
+            sys.modules["wandb"] = _wandb
+
+        # NeMo → lightning → torchmetrics → transformers triggers a
+        # runtime version check that rejects huggingface-hub >= 1.0.
+        # Older transformers pins <1.0 in its dependency_versions_table
+        # but NeMo 2.x pulls huggingface-hub 1.x.  Stub the check
+        # module before the import chain reaches it.  The stub must
+        # expose dep_version_check() because other transformers
+        # submodules import it by name.
+        if "transformers.dependency_versions_check" not in sys.modules:
+            _dvc = types.ModuleType("transformers.dependency_versions_check")
+            _dvc.dep_version_check = lambda pkg, hint=None: None
+            sys.modules["transformers.dependency_versions_check"] = _dvc
+
         from nemo.collections.speechlm2.models import SALM
 
         self._device = device
@@ -67,6 +116,13 @@ class CanaryEngine:
                 pass
 
         log.info("Loading Canary model from %s (dtype=%s)", model_path, load_dtype)
+
+        # Blackwell (sm_120) may have incomplete flash/memory-efficient
+        # SDPA kernels in current PyTorch builds.  Fall back to the
+        # portable math implementation to avoid native CUDA crashes.
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+
         self._model = SALM.from_pretrained(model_path)
         self._model = self._model.eval().to(device=device, dtype=load_dtype)
         log.info("Canary model loaded")
@@ -79,7 +135,7 @@ class CanaryEngine:
         import torch
 
         try:
-            fd, warmup_path = tempfile.mkstemp(suffix=".wav")
+            fd, warmup_path = tempfile.mkstemp(suffix=".wav", dir=_get_temp_dir())
             os.close(fd)
             sf.write(warmup_path, np.zeros(4000, dtype=np.float32), 16000)
 
@@ -89,8 +145,9 @@ class CanaryEngine:
                 "audio": [warmup_path],
             }]]
 
-            with torch.inference_mode():
+            with torch.no_grad():
                 self._model.generate(prompts=conversation, max_new_tokens=2)
+            torch.cuda.synchronize()
             log.info("Canary warmup complete")
         except Exception as exc:
             log.warning("Canary warmup skipped: %s", exc)
@@ -99,6 +156,28 @@ class CanaryEngine:
                 os.unlink(warmup_path)
             except OSError:
                 pass
+
+    def keepalive(self) -> None:
+        """Ping CUDA to prevent GPU power-state context loss on idle.
+
+        Windows may transition the GPU to a low-power state after extended
+        inactivity, invalidating the CUDA context.  Touching an existing
+        on-device tensor keeps the context warm without allocating new
+        memory or risking a secondary-context crash.
+        """
+        if self._model is None:
+            return
+        try:
+            import torch
+
+            # Use an existing model parameter (already on GPU) rather than
+            # allocating new memory, which can create a conflicting CUDA
+            # context on QThreadPool worker threads.
+            with torch.no_grad():
+                p = next(self._model.parameters())
+                _ = p.data_ptr()   # forces CUDA driver activity
+        except Exception as exc:
+            log.warning("CUDA keepalive failed: %s", exc)
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         """Transcribe audio with mandatory 40s chunking.
@@ -125,17 +204,19 @@ class CanaryEngine:
             log.info("Chunk %d/%d: %s", i + 1, len(chunks), text[:80] if text else "(empty)")
             texts.append(text)
 
-        return stitch_transcripts(texts)
+        result = stitch_transcripts(texts)
+        return result
 
     def _transcribe_chunk(self, chunk: np.ndarray, torch_module) -> str:
         """Transcribe a single audio chunk via NeMo conversation API."""
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=_get_temp_dir())
         os.close(fd)
         try:
             sf.write(tmp_path, chunk, 16000)
 
             duration = len(chunk) / 16000
             max_tokens = max(64, int(duration * 20))
+            log.info("chunk %.1fs → max_tokens=%d, file=%s", duration, max_tokens, tmp_path)
 
             conversation = [[{
                 "role": "user",
@@ -143,14 +224,17 @@ class CanaryEngine:
                 "audio": [tmp_path],
             }]]
 
-            with torch_module.inference_mode():
+            log.info("entering generate()")
+            logging.getLogger().handlers[0].flush() if logging.getLogger().handlers else None
+
+            with torch_module.no_grad():
                 response = self._model.generate(
                     prompts=conversation,
                     max_new_tokens=max_tokens,
-                    temperature=0.0,
-                    top_k=1,
                 )[0]
 
+            torch_module.cuda.synchronize()
+            log.info("generate() returned %d token(s)", len(response))
             text = self._model.tokenizer.ids_to_text(response.cpu())
             text = text.replace("<|endoftext|>", "").strip()
             return text

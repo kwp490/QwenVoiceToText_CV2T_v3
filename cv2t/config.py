@@ -1,7 +1,7 @@
 """
 Configuration persistence for CV2T.
 
-Settings are stored as JSON in %APPDATA%/CV2T/settings.json.
+All data lives under the install directory (default C:\Program Files\CV2T).
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "CV2T"
+INSTALL_DIR = Path(os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"))
+
+DEFAULT_CONFIG_DIR = INSTALL_DIR / "config"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "settings.json"
-DEFAULT_MODELS_DIR = str(
-    Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "CV2T" / "models"
-)
+DEFAULT_MODELS_DIR = str(INSTALL_DIR / "models")
+DEFAULT_LOG_DIR = INSTALL_DIR / "logs"
+DEFAULT_TEMP_DIR = INSTALL_DIR / "temp"
 
 
 @dataclass
@@ -65,7 +67,7 @@ class Settings:
             log.info("No settings file found; using defaults")
             return cls()
         try:
-            with open(path, encoding="utf-8") as fh:
+            with open(path, encoding="utf-8-sig") as fh:
                 data = json.load(fh)
             known = {f.name for f in fields(cls)}
             return cls(**{k: v for k, v in data.items() if k in known})

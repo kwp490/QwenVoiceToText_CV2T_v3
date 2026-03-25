@@ -32,7 +32,7 @@ cd cv2t
 uv sync --extra all
 
 # 3. Download model and launch
-uv run cv2t download-model --engine canary --target-dir "$env:LOCALAPPDATA\CV2T\models"
+uv run cv2t download-model --engine canary
 uv run cv2t
 ```
 
@@ -51,7 +51,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 | Setting | Default | Description |
 |---|---|---|
 | `engine` | `whisper` | Speech engine: `canary` or `whisper` |
-| `model_path` | `%LOCALAPPDATA%\CV2T\models` | Directory for model weights |
+| `model_path` | `C:\Program Files\CV2T\models` | Directory for model weights |
 | `device` | `cuda` | Inference device: `cuda` or `cpu` |
 | `language` | `en` | Language code |
 | `inference_timeout` | `30` | Max seconds per transcription |
@@ -60,7 +60,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 | `auto_copy` | `true` | Auto-copy transcription to clipboard |
 | `auto_paste` | `true` | Auto-paste via Ctrl+V after transcription |
 
-Settings are stored at `%APPDATA%\CV2T\settings.json`.
+Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
 
 ## Hotkeys
 
@@ -121,7 +121,6 @@ The `keyboard` library uses low-level keyboard hooks (`SetWindowsHookEx`) which 
 # Run as Administrator
 Add-MpPreference -ExclusionPath "C:\Program Files\CV2T"
 Add-MpPreference -ExclusionProcess "C:\Program Files\CV2T\cv2t.exe"
-Add-MpPreference -ExclusionPath "$env:APPDATA\CV2T"
 ```
 
 ## Building the .exe

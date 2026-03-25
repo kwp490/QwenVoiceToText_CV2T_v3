@@ -7,8 +7,8 @@
     Python 3.11 via uv, syncs all dependencies, downloads model weights,
     and creates a desktop shortcut.
 
-    Requires Administrator elevation. Installs to C:\Program Files\CV2T\.
-    Models stored at %LOCALAPPDATA%\CV2T\models (user-writable).
+    Requires Administrator elevation. Installs everything to C:\Program Files\CV2T\
+    (binaries, models, config, logs, temp).
 
 .NOTES
     Run in an elevated PowerShell session from within the repo:
@@ -17,12 +17,16 @@
 #>
 
 #Requires -RunAsAdministrator
+#Requires -Version 5.1
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $InstallDir = "C:\Program Files\CV2T"
-$ModelsDir = "$env:LOCALAPPDATA\CV2T\models"
+$ModelsDir = "$InstallDir\models"
+$ConfigDir = "$InstallDir\config"
+$LogsDir   = "$InstallDir\logs"
+$TempDir   = "$InstallDir\temp"
 $RepoName = Split-Path -Leaf $PWD.Path
 
 function Write-Step($msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
@@ -118,7 +122,7 @@ function Sync-SourceTree {
     $prevPref = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        robocopy $SourceDir $DestinationDir /MIR /XD .git __pycache__ .venv /XF "*.pyc" /NFL /NDL /NJH /NJS /NC /NS /NP 2>&1 | Out-Null
+        robocopy $SourceDir $DestinationDir /MIR /XD .git __pycache__ .venv models config logs temp installer /XF "*.pyc" /NFL /NDL /NJH /NJS /NC /NS /NP 2>&1 | Out-Null
     } finally {
         $ErrorActionPreference = $prevPref
     }
@@ -268,6 +272,168 @@ if ($installWhisper) {
 Pop-Location
 Write-Ok "Dependencies synced"
 
+# ── Validate virtual environment and core imports ─────────────────────────────
+Write-Step "Validating virtual environment..."
+$venvPython = "$InstallDir\.venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    Write-Host "  ERROR: Virtual environment not found at $InstallDir\.venv" -ForegroundColor Red
+    Write-Host "  Try deleting $InstallDir\.venv and re-running this installer." -ForegroundColor Red
+    exit 1
+}
+$pyVer = & $venvPython --version 2>&1
+Write-Ok "venv Python: $pyVer"
+
+Write-Step "Verifying core Python imports..."
+$coreImportScript = @'
+import sys, importlib
+failed = []
+for mod in ['PySide6', 'sounddevice', 'soundfile', 'numpy', 'keyboard']:
+    try:
+        importlib.import_module(mod)
+    except ImportError as e:
+        failed.append(f'{mod}: {e}')
+if failed:
+    for f in failed: print(f'FAIL: {f}')
+    sys.exit(1)
+else:
+    print('All core imports OK')
+'@
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $importResult = & $venvPython -c $coreImportScript 2>&1
+    foreach ($line in $importResult) { Write-Host "  $line" }
+} finally {
+    $ErrorActionPreference = $prevPref
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ERROR: Core dependencies are missing. Try:" -ForegroundColor Red
+    Write-Host "    cd '$InstallDir'; uv sync $uvExtras" -ForegroundColor Yellow
+    exit 1
+}
+Write-Ok "Core imports verified"
+
+if ($installWhisper) {
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $venvPython -c "import faster_whisper" 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $prevPref }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "faster-whisper import failed. Whisper engine will not work."
+        Write-Host "  Try: cd '$InstallDir'; uv pip install --python .venv\Scripts\python.exe --upgrade 'faster-whisper>=1.1'" -ForegroundColor Yellow
+    } else {
+        Write-Ok "faster-whisper import OK"
+    }
+}
+
+if ($installCanary) {
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $venvPython -c "import torch" 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $prevPref }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "torch import failed. Canary engine will not work."
+        Write-Host "  Try: cd '$InstallDir'; uv pip install --python .venv\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128 torch" -ForegroundColor Yellow
+    } else {
+        Write-Ok "torch import OK"
+    }
+}
+
+# ── Ensure PyTorch has CUDA support (Canary) ──────────────────────────────────
+if ($installCanary) {
+    Write-Step "Verifying PyTorch CUDA support..."
+    $venvPython = "$InstallDir\.venv\Scripts\python.exe"
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $venvPython -c "import torch; assert torch.cuda.is_available()" 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $prevPref }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "PyTorch does not have CUDA support — reinstalling with CUDA 12.8..."
+        Push-Location $InstallDir
+        Invoke-NativeCommand 'Install torch+CUDA' {
+            uv pip install --python .venv\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128 --upgrade --force-reinstall torch
+        }
+        Pop-Location
+        Write-Ok "PyTorch with CUDA reinstalled"
+    } else {
+        Write-Already "PyTorch has CUDA support"
+    }
+
+    # Verify GPU kernels actually work (catches arch mismatch, e.g. Blackwell + cu124)
+    Write-Step "Verifying PyTorch GPU kernel compatibility..."
+    $venvPython = "$InstallDir\.venv\Scripts\python.exe"
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $venvPython -c "import torch; torch.zeros(1, device='cuda')" 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $prevPref }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "PyTorch CUDA kernels failed — GPU arch may require a newer CUDA toolkit"
+        Write-Host "  Reinstalling torch from cu128 index (includes Blackwell/sm_120 support)..."
+        Push-Location $InstallDir
+        Invoke-NativeCommand 'Upgrade torch for GPU arch' {
+            uv pip install --python .venv\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128 --upgrade --force-reinstall torch
+        }
+        Pop-Location
+        # Re-verify after reinstall
+        $prevPref2 = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & $venvPython -c "import torch; torch.zeros(1, device='cuda')" 2>&1 | Out-Null }
+        finally { $ErrorActionPreference = $prevPref2 }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "GPU kernel test still fails after torch reinstall — Canary will fall back to CPU"
+        } else {
+            Write-Ok "PyTorch GPU kernels working after reinstall"
+        }
+    } else {
+        Write-Ok "PyTorch GPU kernels verified for this GPU"
+    }
+}
+
+# ── Verify huggingface-hub compatibility (Canary) ────────────────────────────
+if ($installCanary) {
+    Write-Step "Checking huggingface-hub version compatibility..."
+    $venvPython = "$InstallDir\.venv\Scripts\python.exe"
+
+    # Ensure wandb is functional (NeMo imports it transitively)
+    Write-Host "  Verifying wandb installation..."
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $venvPython -c "from wandb.proto.wandb_telemetry_pb2 import Imports" 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $prevPref }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "wandb is broken or missing — reinstalling..."
+        Push-Location $InstallDir
+        Invoke-NativeCommand 'Fix wandb' { uv pip install --python .venv\Scripts\python.exe --force-reinstall wandb }
+        Pop-Location
+        Write-Ok "wandb reinstalled"
+    } else {
+        Write-Already "wandb is functional"
+    }
+
+    $hfVer = & $venvPython -c "import huggingface_hub; print(huggingface_hub.__version__)" 2>$null
+    if (-not $hfVer) {
+        Write-Host "  huggingface-hub not found, installing compatible version..."
+        Push-Location $InstallDir
+        Invoke-NativeCommand 'Install huggingface-hub' { uv pip install --python .venv\Scripts\python.exe "huggingface-hub>=0.34.0,<1.0" }
+        Pop-Location
+        Write-Ok "huggingface-hub installed"
+    } else {
+        $parts = $hfVer.Trim().Split('.')
+        $major = [int]$parts[0]
+        $minor = [int]$parts[1]
+        if ($major -ge 1 -or ($major -eq 0 -and $minor -lt 34)) {
+            Write-Warn "huggingface-hub $hfVer is outside required range (>=0.34.0,<1.0) for transformers"
+            Write-Host "  Installing compatible version..."
+            Push-Location $InstallDir
+            Invoke-NativeCommand 'Fix huggingface-hub' { uv pip install --python .venv\Scripts\python.exe "huggingface-hub>=0.34.0,<1.0" }
+            Pop-Location
+            Write-Ok "huggingface-hub pinned to compatible version"
+        } else {
+            Write-Already "huggingface-hub $hfVer is compatible"
+        }
+    }
+}
+
 # ── Verify CUDA DLLs ─────────────────────────────────────────────────────────
 Write-Step "Verifying CUDA runtime libraries..."
 try {
@@ -307,6 +473,49 @@ else: print('WARN: cuDNN DLL not found (non-critical)')
 }
 
 # ── Download models ──────────────────────────────────────────────────────────
+foreach ($dir in @($ModelsDir, $ConfigDir, $LogsDir, $TempDir)) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+}
+
+# ── Migrate existing data from old locations ──────────────────────────────────
+Write-Step "Checking for data to migrate from previous install..."
+
+$oldSettingsFile = "$env:APPDATA\CV2T\settings.json"
+$newSettingsFile = Join-Path $ConfigDir "settings.json"
+if ((Test-Path $oldSettingsFile) -and -not (Test-Path $newSettingsFile)) {
+    Copy-Item -Path $oldSettingsFile -Destination $newSettingsFile -Force
+    Write-Ok "Migrated settings.json from $oldSettingsFile"
+} else {
+    Write-Already "No settings to migrate (already present or no old settings found)"
+}
+
+$oldModelsDir = "$env:LOCALAPPDATA\CV2T\models"
+if (Test-Path $oldModelsDir) {
+    $migrated = 0
+    foreach ($engineDir in (Get-ChildItem -Path $oldModelsDir -Directory)) {
+        $destEngine = Join-Path $ModelsDir $engineDir.Name
+        if (-not (Test-Path $destEngine)) {
+            Write-Host "  Migrating $($engineDir.Name) model..."
+            Copy-Item -Path $engineDir.FullName -Destination $destEngine -Recurse -Force
+            $migrated++
+            Write-Ok "Migrated $($engineDir.Name) model from $($engineDir.FullName)"
+        }
+    }
+    if ($migrated -eq 0) {
+        Write-Already "No models to migrate (already present in new location)"
+    }
+} else {
+    Write-Already "No old model directory found at $oldModelsDir"
+}
+
+$oldLogDir = "$env:APPDATA\CV2T"
+foreach ($logFile in @("cv2t.log", "cv2t.log.1", "cv2t.log.2")) {
+    $oldLog = Join-Path $oldLogDir $logFile
+    $newLog = Join-Path $LogsDir $logFile
+    if ((Test-Path $oldLog) -and -not (Test-Path $newLog)) {
+        Copy-Item -Path $oldLog -Destination $newLog -Force
+    }
+}
 if ($installWhisper) {
     Write-Step "Checking Whisper model..."
     $whisperDir = Join-Path $ModelsDir "whisper"
@@ -330,25 +539,34 @@ if ($installWhisper) {
 if ($installCanary) {
     Write-Step "Checking Canary model..."
     $canaryDir = Join-Path $ModelsDir "canary"
-    if (Test-Path $canaryDir) {
-        Write-Already "Canary model already present in $canaryDir"
+    # Validate it's a NeMo SALM model (not an old ONNX download)
+    $canaryConfigFile = Join-Path $canaryDir "config.json"
+    $canaryIsNemo = $false
+    if (Test-Path $canaryConfigFile) {
+        $canaryConfig = Get-Content $canaryConfigFile -Raw | ConvertFrom-Json
+        if ($canaryConfig.PSObject.Properties.Match('audio_locator_tag').Count -gt 0) {
+            $canaryIsNemo = $true
+        }
+    }
+    if ($canaryIsNemo) {
+        Write-Already "Canary NeMo model already present in $canaryDir"
     } else {
-        Write-Host "  Downloading Canary model..."
+        if (Test-Path $canaryDir) {
+            Write-Warn "Removing incompatible Canary model (ONNX) from $canaryDir..."
+            Remove-Item -Recurse -Force $canaryDir
+        }
+        Write-Host "  Downloading Canary NeMo SALM model (nvidia/canary-qwen-2.5b)..."
         Push-Location $InstallDir
         Invoke-StreamingCommand 'Canary model download' { uv run cv2t download-model --engine canary --target-dir $ModelsDir }
         Pop-Location
-        Write-Ok "Canary model downloaded to $ModelsDir"
+        Write-Ok "Canary model downloaded to $canaryDir"
     }
 }
 
 # ── Write default engine to settings ─────────────────────────────────────────
 Write-Step "Configuring default engine..."
-$settingsDir = "$env:APPDATA\CV2T"
-$settingsFile = Join-Path $settingsDir "settings.json"
+$settingsFile = Join-Path $ConfigDir "settings.json"
 $cfg = $null
-if (-not (Test-Path $settingsDir)) {
-    New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
-}
 if ($installCanary -and -not $installWhisper) {
     $defaultEngine = 'canary'
 } else {
@@ -368,25 +586,27 @@ if ($cfg.PSObject.Properties.Match('engine').Count -eq 0) {
 } else {
     $cfg.engine = $defaultEngine
 }
-$cfg | ConvertTo-Json -Depth 10 | Set-Content $settingsFile -Encoding UTF8
+$jsonText = $cfg | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($settingsFile, $jsonText, (New-Object System.Text.UTF8Encoding $false))
 Write-Ok "Default engine set to '$defaultEngine' in $settingsFile"
 
-# ── Set permissions ──────────────────────────────────────────────────────────
+# ── Set permissions (current user gets Modify on install dir) ────────────────
 Write-Step "Checking directory permissions..."
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $acl = Get-Acl $InstallDir
 $existingRule = $acl.Access | Where-Object {
-    $_.IdentityReference.Value -eq "BUILTIN\Users" -and
-    $_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $_.IdentityReference.Value -eq $currentUser -and
+    $_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify
 }
 if ($existingRule) {
-    Write-Already "BUILTIN\\Users already has ReadAndExecute on $InstallDir"
+    Write-Already "$currentUser already has Modify on $InstallDir"
 } else {
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Users", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow"
+        $currentUser, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
     )
     $acl.SetAccessRule($rule)
     Set-Acl $InstallDir $acl
-    Write-Ok "Permissions set on $InstallDir"
+    Write-Ok "Granted Modify permission to $currentUser on $InstallDir"
 }
 
 # ── Create desktop shortcut ──────────────────────────────────────────────────
@@ -412,12 +632,9 @@ try {
     $prefs = Get-MpPreference -ErrorAction SilentlyContinue
     $pathExclusions = @($prefs.ExclusionPath)
     $needInstallDir = $InstallDir -notin $pathExclusions
-    $appDataDir = "$env:APPDATA\CV2T"
-    $needAppData = $appDataDir -notin $pathExclusions
 
-    if ($needInstallDir -or $needAppData) {
-        if ($needInstallDir) { Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue }
-        if ($needAppData)    { Add-MpPreference -ExclusionPath $appDataDir -ErrorAction SilentlyContinue }
+    if ($needInstallDir) {
+        Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
         Write-Ok "Defender exclusions added"
     } else {
         Write-Already "Defender exclusions already configured"
@@ -426,7 +643,29 @@ try {
     Write-Warn "Could not check/add Defender exclusions (non-critical)"
 }
 
+# ── Final smoke test ──────────────────────────────────────────────────────────
+Write-Step "Running smoke test..."
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    Push-Location $InstallDir
+    $smokeResult = & uv run cv2t --version 2>&1
+    Pop-Location
+    foreach ($line in $smokeResult) { Write-Host "  $line" }
+} finally {
+    $ErrorActionPreference = $prevPref
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "Smoke test failed — CV2T may not launch correctly"
+    Write-Host "  Try running manually: cd '$InstallDir'; uv run cv2t --version" -ForegroundColor Yellow
+    Write-Host "  Check logs at: $LogsDir\cv2t.log" -ForegroundColor Yellow
+} else {
+    Write-Ok "Smoke test passed: $($smokeResult -join ' ')"
+}
+
 Write-Host "`n=== CV2T installed successfully ===" -ForegroundColor Green
 Write-Host "  Install dir: $InstallDir"
 Write-Host "  Models dir:  $ModelsDir"
+Write-Host "  Config dir:  $ConfigDir"
+Write-Host "  Logs dir:    $LogsDir"
 Write-Host "  Launch with: cd '$InstallDir'; uv run cv2t"

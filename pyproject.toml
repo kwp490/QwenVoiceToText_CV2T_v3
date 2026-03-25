@@ -25,6 +25,7 @@ canary = [
     "nemo_toolkit[asr]>=2.0",
     "torch>=2.1",
     "accelerate",
+    "huggingface-hub>=0.34.0",
 ]
 canary-onnx = [
     "onnxruntime-gpu==1.19.*",
@@ -45,3 +46,14 @@ cv2t = "cv2t.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+required-environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
