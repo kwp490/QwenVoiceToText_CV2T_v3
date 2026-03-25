@@ -122,17 +122,41 @@ def _cmd_download_model(args: argparse.Namespace) -> int:
     os.makedirs(target_dir, exist_ok=True)
 
     if args.engine == "whisper":
-        return _download_whisper(target_dir)
+        engine_dir = os.path.join(target_dir, "whisper")
+        os.makedirs(engine_dir, exist_ok=True)
+        return _download_whisper(engine_dir)
     elif args.engine == "canary":
-        return _download_canary(target_dir)
+        engine_dir = os.path.join(target_dir, "canary")
+        os.makedirs(engine_dir, exist_ok=True)
+        return _download_canary(engine_dir)
     return 1
+
+
+def _is_whisper_model(model_dir: str) -> bool:
+    """Return True if config.json in *model_dir* describes a Whisper model."""
+    import json as _json
+    cfg_path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        archs = cfg.get("architectures", [])
+        if archs and not any("whisper" in a.lower() for a in archs):
+            return False
+        model_type = cfg.get("model_type", "")
+        if model_type and model_type.lower() not in ("whisper", ""):
+            return False
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _whisper_model_ready(target_dir: str) -> bool:
     """Return True if the whisper model files already exist locally."""
-    return all(
-        os.path.isfile(os.path.join(target_dir, f))
-        for f in _WHISPER_REQUIRED_FILES
+    return (
+        all(os.path.isfile(os.path.join(target_dir, f)) for f in _WHISPER_REQUIRED_FILES)
+        and _is_whisper_model(target_dir)
     )
 
 

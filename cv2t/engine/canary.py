@@ -51,6 +51,12 @@ class CanaryEngine:
 
         self._device = device
 
+        # Use engine-specific subdirectory; fall back to base path for
+        # existing installations.
+        canary_subdir = os.path.join(model_path, "canary")
+        if os.path.isdir(canary_subdir):
+            model_path = canary_subdir
+
         # dtype selection: bfloat16 on Ampere+, float16 otherwise
         load_dtype = torch.float16
         if torch.cuda.is_available():

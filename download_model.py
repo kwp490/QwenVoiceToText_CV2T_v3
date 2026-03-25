@@ -52,9 +52,13 @@ def main() -> int:
     os.makedirs(target_dir, exist_ok=True)
 
     if args.engine == "whisper":
-        return _download_whisper(target_dir)
+        engine_dir = os.path.join(target_dir, "whisper")
+        os.makedirs(engine_dir, exist_ok=True)
+        return _download_whisper(engine_dir)
     elif args.engine == "canary":
-        return _download_canary(target_dir)
+        engine_dir = os.path.join(target_dir, "canary")
+        os.makedirs(engine_dir, exist_ok=True)
+        return _download_canary(engine_dir)
     return 1
 
 

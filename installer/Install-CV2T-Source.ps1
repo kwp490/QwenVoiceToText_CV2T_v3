@@ -57,6 +57,52 @@ function Invoke-StreamingCommand {
     if ($LASTEXITCODE -ne 0) { throw "$Label failed (exit code $LASTEXITCODE)" }
 }
 
+function Update-OutdatedFiles {
+    <# Compare every file in SourceDir against DestDir; force-copy any that
+       are missing or older in the destination.  Returns the count of files updated. #>
+    param(
+        [Parameter(Mandatory)] [string]$SourceDir,
+        [Parameter(Mandatory)] [string]$DestDir,
+        [string[]]$ExcludeDirs = @('.git', '__pycache__', '.venv'),
+        [string[]]$ExcludeExts = @('.pyc')
+    )
+
+    $updated = 0
+    $srcItems = Get-ChildItem -Path $SourceDir -File -Recurse -Force
+    foreach ($srcFile in $srcItems) {
+        $rel = $srcFile.FullName.Substring($SourceDir.TrimEnd('\').Length + 1)
+
+        # Skip excluded directories
+        $skip = $false
+        foreach ($exDir in $ExcludeDirs) {
+            if ($rel -like "$exDir\*" -or $rel -like "*\$exDir\*") { $skip = $true; break }
+        }
+        if ($skip) { continue }
+
+        # Skip excluded extensions
+        foreach ($exExt in $ExcludeExts) {
+            if ($srcFile.Extension -eq $exExt) { $skip = $true; break }
+        }
+        if ($skip) { continue }
+
+        $destFile = Join-Path $DestDir $rel
+        if (-not (Test-Path $destFile)) {
+            $destParent = Split-Path $destFile -Parent
+            if (-not (Test-Path $destParent)) {
+                New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+            }
+            Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+            Write-Host "  [NEW]  $rel" -ForegroundColor Yellow
+            $updated++
+        } elseif ($srcFile.LastWriteTimeUtc -gt (Get-Item $destFile).LastWriteTimeUtc) {
+            Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+            Write-Host "  [UPD]  $rel" -ForegroundColor Yellow
+            $updated++
+        }
+    }
+    return $updated
+}
+
 function Sync-SourceTree {
     param(
         [Parameter(Mandatory = $true)]
@@ -197,6 +243,17 @@ if ($RepoRoot -eq $InstallDir) {
 Assert-ValidInstallLayout -InstallRoot $InstallDir -NestedRepoPath $NestedRepoDir
 Write-Ok "Install layout verified"
 
+# ── Verify & patch outdated files ─────────────────────────────────────────────
+if ($RepoRoot -ne $InstallDir) {
+    Write-Step "Checking for outdated files in $InstallDir..."
+    $outdated = Update-OutdatedFiles -SourceDir $RepoRoot -DestDir $InstallDir
+    if ($outdated -eq 0) {
+        Write-Already "All files are up-to-date"
+    } else {
+        Write-Ok "$outdated file(s) updated"
+    }
+}
+
 # ── Install dependencies ─────────────────────────────────────────────────────
 Write-Step "Syncing dependencies ($($selectedNames -join ' + '))..."
 Write-Host "  Running uv sync (will skip already-installed packages)..."
@@ -213,7 +270,6 @@ Write-Ok "Dependencies synced"
 
 # ── Verify CUDA DLLs ─────────────────────────────────────────────────────────
 Write-Step "Verifying CUDA runtime libraries..."
-$cudaOk = $false
 try {
     $pyScript = @'
 import os, sys, importlib.util
@@ -242,7 +298,6 @@ else: print('WARN: cuDNN DLL not found (non-critical)')
     $cudaCheck = & "$InstallDir\.venv\Scripts\python.exe" -c $pyScript 2>&1
     foreach ($line in $cudaCheck) { Write-Host "  $line" }
     if ($LASTEXITCODE -eq 0) {
-        $cudaOk = $true
         Write-Ok "CUDA runtime libraries verified"
     } else {
         Write-Warn "CUDA DLLs missing — GPU acceleration may fall back to CPU"
@@ -254,20 +309,21 @@ else: print('WARN: cuDNN DLL not found (non-critical)')
 # ── Download models ──────────────────────────────────────────────────────────
 if ($installWhisper) {
     Write-Step "Checking Whisper model..."
+    $whisperDir = Join-Path $ModelsDir "whisper"
     $whisperFiles = @("config.json", "model.bin", "tokenizer.json")
     $whisperReady = $true
     foreach ($f in $whisperFiles) {
-        if (-not (Test-Path (Join-Path $ModelsDir $f))) { $whisperReady = $false; break }
+        if (-not (Test-Path (Join-Path $whisperDir $f))) { $whisperReady = $false; break }
     }
     if ($whisperReady) {
-        Write-Already "Whisper model already present in $ModelsDir"
+        Write-Already "Whisper model already present in $whisperDir"
     } else {
         Write-Host "  Downloading Whisper model 'large-v3-turbo'..."
         Write-Host "  Using repo mobiuslabsgmbh/faster-whisper-large-v3-turbo"
         Push-Location $InstallDir
         Invoke-StreamingCommand 'Model download' { uv run cv2t download-model --engine whisper --target-dir $ModelsDir }
         Pop-Location
-        Write-Ok "Whisper model downloaded to $ModelsDir"
+        Write-Ok "Whisper model downloaded to $whisperDir"
     }
 }
 
@@ -289,6 +345,7 @@ if ($installCanary) {
 Write-Step "Configuring default engine..."
 $settingsDir = "$env:APPDATA\CV2T"
 $settingsFile = Join-Path $settingsDir "settings.json"
+$cfg = $null
 if (-not (Test-Path $settingsDir)) {
     New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
 }
@@ -298,12 +355,15 @@ if ($installCanary -and -not $installWhisper) {
     $defaultEngine = 'whisper'
 }
 if (Test-Path $settingsFile) {
-    $cfg = Get-Content $settingsFile -Raw | ConvertFrom-Json
+    $rawSettings = Get-Content $settingsFile -Raw
+    if (-not [string]::IsNullOrWhiteSpace($rawSettings)) {
+        $cfg = $rawSettings | ConvertFrom-Json
+    }
 }
 if (-not $cfg) {
     $cfg = [pscustomobject]@{}
 }
-if (-not ($cfg.PSObject.Properties.Name -contains 'engine')) {
+if ($cfg.PSObject.Properties.Match('engine').Count -eq 0) {
     $cfg | Add-Member -NotePropertyName 'engine' -NotePropertyValue $defaultEngine
 } else {
     $cfg.engine = $defaultEngine

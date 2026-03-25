@@ -68,8 +68,35 @@ _WHISPER_ALLOW_PATTERNS = [
 ]
 
 
+def _is_whisper_model(model_dir: str) -> bool:
+    """Return True if config.json in *model_dir* describes a Whisper model."""
+    import json
+    cfg_path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        # CTranslate2 Whisper configs don't have an "architectures" key;
+        # if one is present and it's not whisper, this is the wrong model.
+        archs = cfg.get("architectures", [])
+        if archs and not any("whisper" in a.lower() for a in archs):
+            return False
+        # CTranslate2 whisper models have "model_type": "whisper" or no
+        # model_type at all (older conversions).  Reject known non-whisper.
+        model_type = cfg.get("model_type", "")
+        if model_type and model_type.lower() not in ("whisper", ""):
+            return False
+        return True
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
 def _whisper_model_ready(model_dir: str) -> bool:
-    return all(os.path.isfile(os.path.join(model_dir, name)) for name in _WHISPER_REQUIRED_FILES)
+    return (
+        all(os.path.isfile(os.path.join(model_dir, name)) for name in _WHISPER_REQUIRED_FILES)
+        and _is_whisper_model(model_dir)
+    )
 
 
 def _log_runtime_diagnostics() -> None:
@@ -90,6 +117,49 @@ def _log_runtime_diagnostics() -> None:
         log.info("_MODELS['%s'] = %r", _WHISPER_MODEL_ID, resolved_repo)
     except Exception as exc:
         log.warning("Unable to inspect faster-whisper runtime diagnostics: %s", exc)
+
+
+def _patch_suppressed_tokens() -> None:
+    """Monkey-patch faster_whisper.transcribe.get_suppressed_tokens to filter
+    out ``None`` values that some tokenizers emit (e.g. ``sot_lm``).
+
+    Without this patch, ``sorted(set(suppress_tokens))`` raises
+    ``TypeError: '<' not supported between instances of 'NoneType' and 'int'``
+    because the original function appends tokenizer attributes (like
+    ``tokenizer.sot_lm``) that can be ``None`` for certain models, then
+    calls ``sorted()`` on the mixed set.
+    """
+    import faster_whisper.transcribe as _fw_mod
+
+    if getattr(_fw_mod, "_cv2t_patched", False):
+        return  # already patched
+
+    def _safe_get_suppressed_tokens(tokenizer, suppress_tokens):
+        if -1 in suppress_tokens:
+            suppress_tokens = [t for t in suppress_tokens if t is not None and t >= 0]
+            suppress_tokens.extend(tokenizer.non_speech_tokens)
+        elif suppress_tokens is None or len(suppress_tokens) == 0:
+            suppress_tokens = []
+        else:
+            assert isinstance(suppress_tokens, list), "suppress_tokens must be a list"
+
+        suppress_tokens.extend(
+            [
+                tokenizer.transcribe,
+                tokenizer.translate,
+                tokenizer.sot,
+                tokenizer.sot_prev,
+                tokenizer.sot_lm,
+                tokenizer.no_speech,
+            ]
+        )
+
+        # Filter out None values that some tokenizers produce
+        return tuple(sorted(t for t in set(suppress_tokens) if t is not None))
+
+    _fw_mod.get_suppressed_tokens = _safe_get_suppressed_tokens
+    _fw_mod._cv2t_patched = True
+    log.info("Patched faster_whisper get_suppressed_tokens to filter None values")
 
 
 class WhisperEngine:
@@ -115,10 +185,18 @@ class WhisperEngine:
         _add_nvidia_dll_dirs()
         from faster_whisper import WhisperModel
 
+        _patch_suppressed_tokens()
+
         compute = "float16" if device == "cuda" else "auto"
         _log_runtime_diagnostics()
 
-        if os.path.isdir(model_path) and _whisper_model_ready(model_path):
+        # Use engine-specific subdirectory; fall back to base path for
+        # existing installations that already have Whisper files there.
+        whisper_subdir = os.path.join(model_path, "whisper")
+        if os.path.isdir(whisper_subdir) and _whisper_model_ready(whisper_subdir):
+            local_dir = whisper_subdir
+            log.info("Whisper model files found locally: %s", local_dir)
+        elif os.path.isdir(model_path) and _whisper_model_ready(model_path):
             local_dir = model_path
             log.info("Whisper model files found locally: %s", local_dir)
         else:
@@ -128,9 +206,10 @@ class WhisperEngine:
                 _WHISPER_REPO_ID,
                 model_path,
             )
+            os.makedirs(whisper_subdir, exist_ok=True)
             local_dir = snapshot_download(
                 repo_id=_WHISPER_REPO_ID,
-                local_dir=model_path,
+                local_dir=whisper_subdir,
                 local_files_only=False,
                 allow_patterns=_WHISPER_ALLOW_PATTERNS,
             )
