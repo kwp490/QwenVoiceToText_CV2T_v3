@@ -161,21 +161,17 @@ class CanaryEngine:
         """Ping CUDA to prevent GPU power-state context loss on idle.
 
         Windows may transition the GPU to a low-power state after extended
-        inactivity, invalidating the CUDA context.  Touching an existing
-        on-device tensor keeps the context warm without allocating new
-        memory or risking a secondary-context crash.
+        inactivity, invalidating the CUDA context.  ``synchronize()``
+        touches the CUDA runtime (waits on the default stream) without
+        allocating memory or accessing model tensors — thread-safe and
+        lightweight when the queue is empty.
         """
         if self._model is None:
             return
         try:
             import torch
 
-            # Use an existing model parameter (already on GPU) rather than
-            # allocating new memory, which can create a conflicting CUDA
-            # context on QThreadPool worker threads.
-            with torch.no_grad():
-                p = next(self._model.parameters())
-                _ = p.data_ptr()   # forces CUDA driver activity
+            torch.cuda.synchronize()
         except Exception as exc:
             log.warning("CUDA keepalive failed: %s", exc)
 

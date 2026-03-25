@@ -690,15 +690,27 @@ class MainWindow(QMainWindow):
         play_beep((900, 500))   # descending chirp → "done"
         self._set_dictation_state(DictationState.PROCESSING)
 
-        # Pause NVML polling — concurrent nvmlInit/driver-lock calls can
-        # deadlock against CUDA kernel launches in generate().
+        # Pause NVML polling and keepalive — concurrent driver/CUDA calls
+        # can deadlock against CUDA kernel launches in generate().
         self._metrics_timer.stop()
+        self._keepalive_timer.stop()
+
+        # Wait for any in-flight metrics poll to finish before dispatching
+        # the transcription worker (avoids NVML / CUDA overlap).
+        import time as _time
+        _deadline = _time.monotonic() + 2.0
+        while self._metrics_poll_in_flight and _time.monotonic() < _deadline:
+            from PySide6.QtCore import QCoreApplication
+            QCoreApplication.processEvents()
+            _time.sleep(0.05)
 
         # Get raw audio (fast, on main thread)
         audio = self._recorder.get_raw_audio()
         if audio is None:
             self._log_ui("No audio recorded", error=True)
             self._metrics_timer.start()
+            if hasattr(self._engine, "keepalive"):
+                self._keepalive_timer.start()
             self._set_dictation_state(DictationState.IDLE)
             return
 
@@ -731,6 +743,8 @@ class MainWindow(QMainWindow):
     def _on_transcription_result(self, text: str) -> None:
         """Handle transcription result — runs on MAIN THREAD (safe for clipboard)."""
         self._metrics_timer.start()
+        if hasattr(self._engine, "keepalive"):
+            self._keepalive_timer.start()
         text = str(text).strip()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -764,6 +778,8 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_transcription_error(self, err: str) -> None:
         self._metrics_timer.start()
+        if hasattr(self._engine, "keepalive"):
+            self._keepalive_timer.start()
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self._set_dictation_state(DictationState.ERROR)
         self._log_ui(f"Transcription error: {err}", error=True)
