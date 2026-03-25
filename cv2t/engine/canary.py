@@ -10,8 +10,10 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import queue
 import tempfile
-from typing import Optional
+import threading
+from typing import Any, Optional
 
 import numpy as np
 import soundfile as sf
@@ -38,11 +40,51 @@ def _get_temp_dir() -> str:
 
 
 class CanaryEngine:
-    """NeMo-based Canary Qwen 2.5B speech engine."""
+    """NeMo-based Canary Qwen 2.5B speech engine.
+
+    All PyTorch / CUDA operations are pinned to a single dedicated thread
+    to prevent cross-thread CUDA context corruption.  QThreadPool assigns
+    arbitrary worker threads for each task; NeMo SALM's internal state
+    (KV caches, attention buffers) is not safe across OS threads.
+    """
 
     def __init__(self) -> None:
         self._model = None
         self._device: str = "cuda"
+
+        # Dedicated inference thread — all CUDA / PyTorch work runs here.
+        self._inf_queue: queue.Queue = queue.Queue()
+        self._inf_thread = threading.Thread(
+            target=self._inference_loop,
+            name="canary-inference",
+            daemon=True,
+        )
+        self._inf_thread.start()
+
+    # ── Inference-thread helpers ──────────────────────────────────────────
+
+    def _inference_loop(self) -> None:
+        """Consume callables on the dedicated thread until sentinel."""
+        while True:
+            item = self._inf_queue.get()
+            if item is None:          # shutdown sentinel
+                break
+            fn, args, kwargs, holder = item
+            try:
+                holder["value"] = fn(*args, **kwargs)
+            except BaseException as exc:
+                holder["error"] = exc
+            finally:
+                holder["done"].set()
+
+    def _run_on_inf_thread(self, fn, *args: Any, **kwargs: Any) -> Any:
+        """Submit *fn* to the inference thread and block until complete."""
+        holder: dict = {"done": threading.Event(), "value": None, "error": None}
+        self._inf_queue.put((fn, args, kwargs, holder))
+        holder["done"].wait()
+        if holder["error"] is not None:
+            raise holder["error"]
+        return holder["value"]
 
     @property
     def name(self) -> str:
@@ -57,7 +99,11 @@ class CanaryEngine:
         return 5.0
 
     def load(self, model_path: str, device: str = "cuda") -> None:
-        """Load Canary model via NeMo SALM.from_pretrained()."""
+        """Load Canary model — delegates to the dedicated inference thread."""
+        self._run_on_inf_thread(self._load_impl, model_path, device)
+
+    def _load_impl(self, model_path: str, device: str) -> None:
+        """Load Canary model via NeMo SALM.from_pretrained() (inference thread)."""
         import importlib.machinery
         import sys
         import types
@@ -164,7 +210,11 @@ class CanaryEngine:
                 pass
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
-        """Transcribe audio with mandatory 40s chunking.
+        """Transcribe audio — delegates to the dedicated inference thread."""
+        return self._run_on_inf_thread(self._transcribe_impl, audio, sample_rate)
+
+    def _transcribe_impl(self, audio: np.ndarray, sample_rate: int) -> str:
+        """Transcribe audio with mandatory chunking (inference thread).
 
         Accepts arbitrary-length 1D float32 mono audio at any sample rate.
         """
@@ -235,7 +285,16 @@ class CanaryEngine:
                 pass
 
     def unload(self) -> None:
-        """Release model and free VRAM."""
+        """Release model, free VRAM, and stop the inference thread."""
+        # Run the actual CUDA cleanup on the inference thread.
+        if self._inf_thread.is_alive():
+            self._run_on_inf_thread(self._unload_impl)
+            # Send shutdown sentinel and join the thread.
+            self._inf_queue.put(None)
+            self._inf_thread.join(timeout=5)
+
+    def _unload_impl(self) -> None:
+        """Release model and free VRAM (inference thread)."""
         if self._model is not None:
             del self._model
             self._model = None
