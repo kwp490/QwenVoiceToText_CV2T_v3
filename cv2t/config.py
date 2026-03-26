@@ -1,4 +1,4 @@
-"""
+r"""
 Configuration persistence for CV2T.
 
 All data lives under the install directory (default C:\Program Files\CV2T).
@@ -51,6 +51,25 @@ class Settings:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    _VALID_ENGINES = {"whisper", "canary"}
+    _VALID_DEVICES = {"cuda", "cpu"}
+
+    def validate(self) -> None:
+        """Clamp/correct invalid field values to safe defaults."""
+        if self.engine not in self._VALID_ENGINES:
+            log.warning("Unknown engine '%s'; falling back to 'whisper'", self.engine)
+            self.engine = "whisper"
+        if self.device not in self._VALID_DEVICES:
+            log.warning("Unknown device '%s'; falling back to 'cuda'", self.device)
+            self.device = "cuda"
+        if self.sample_rate < 8000 or self.sample_rate > 48000:
+            log.warning("Invalid sample_rate %d; resetting to 16000", self.sample_rate)
+            self.sample_rate = 16000
+        if self.inference_timeout < 1:
+            self.inference_timeout = 30
+        if self.silence_threshold <= 0:
+            self.silence_threshold = 0.0015
+
     def save(self, path: Path | None = None) -> None:
         """Persist settings to JSON file."""
         path = path or DEFAULT_CONFIG_FILE
@@ -70,7 +89,9 @@ class Settings:
             with open(path, encoding="utf-8-sig") as fh:
                 data = json.load(fh)
             known = {f.name for f in fields(cls)}
-            return cls(**{k: v for k, v in data.items() if k in known})
+            instance = cls(**{k: v for k, v in data.items() if k in known})
+            instance.validate()
+            return instance
         except Exception:
             log.warning("Failed to load settings; using defaults", exc_info=True)
             return cls()

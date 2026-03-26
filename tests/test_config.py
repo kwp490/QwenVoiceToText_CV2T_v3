@@ -69,3 +69,63 @@ class SettingsConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettingsValidationTests(unittest.TestCase):
+    """Tests for Settings.validate() correcting invalid values."""
+
+    def test_invalid_engine_falls_back_to_whisper(self):
+        s = Settings(engine="nonexistent")
+        s.validate()
+        self.assertEqual(s.engine, "whisper")
+
+    def test_valid_engines_accepted(self):
+        for engine in ("whisper", "canary"):
+            s = Settings(engine=engine)
+            s.validate()
+            self.assertEqual(s.engine, engine)
+
+    def test_invalid_device_falls_back_to_cuda(self):
+        s = Settings(device="gpu")
+        s.validate()
+        self.assertEqual(s.device, "cuda")
+
+    def test_valid_devices_accepted(self):
+        for device in ("cuda", "cpu"):
+            s = Settings(device=device)
+            s.validate()
+            self.assertEqual(s.device, device)
+
+    def test_sample_rate_too_low_reset(self):
+        s = Settings(sample_rate=100)
+        s.validate()
+        self.assertEqual(s.sample_rate, 16000)
+
+    def test_sample_rate_too_high_reset(self):
+        s = Settings(sample_rate=96000)
+        s.validate()
+        self.assertEqual(s.sample_rate, 16000)
+
+    def test_valid_sample_rate_unchanged(self):
+        for sr in (8000, 16000, 44100, 48000):
+            s = Settings(sample_rate=sr)
+            s.validate()
+            self.assertEqual(s.sample_rate, sr)
+
+    def test_inference_timeout_too_low_reset(self):
+        s = Settings(inference_timeout=0)
+        s.validate()
+        self.assertEqual(s.inference_timeout, 30)
+
+    def test_silence_threshold_zero_reset(self):
+        s = Settings(silence_threshold=0)
+        s.validate()
+        self.assertEqual(s.silence_threshold, 0.0015)
+
+    def test_load_invalid_engine_in_json_corrected(self):
+        """Settings loaded from JSON with invalid engine should be corrected."""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "settings.json"
+            p.write_text(json.dumps({"engine": "invalid_eng"}), encoding="utf-8")
+            s = Settings.load(p)
+            self.assertEqual(s.engine, "whisper")

@@ -22,13 +22,13 @@ dependencies = [
 
 [project.optional-dependencies]
 canary = [
-    "nemo_toolkit[asr]>=2.0",
-    "torch>=2.1",
+    "nemo_toolkit[asr]>=2.0,<3",
+    "torch>=2.1,<2.8",
     "accelerate",
     "huggingface-hub>=0.34.0",
 ]
 whisper = [
-    "faster-whisper>=1.1",
+    "faster-whisper>=1.1,<2",
     "nvidia-cublas-cu12>=12.4; sys_platform == 'win32'",
     "nvidia-cudnn-cu12>=9.1; sys_platform == 'win32'",
 ]

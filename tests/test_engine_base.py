@@ -96,3 +96,46 @@ class TestEngineProtocol(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSpeechEngineABC(unittest.TestCase):
+    """Tests for the shared SpeechEngine base class."""
+
+    def test_is_loaded_false_by_default(self):
+        from cv2t.engine.whisper import WhisperEngine
+        engine = WhisperEngine()
+        self.assertFalse(engine.is_loaded)
+
+    def test_transcribe_raises_when_not_loaded(self):
+        from cv2t.engine.whisper import WhisperEngine
+        engine = WhisperEngine()
+        audio = np.zeros(16000, dtype=np.float32)
+        with self.assertRaises(RuntimeError):
+            engine.transcribe(audio, 16000)
+
+    def test_transcribe_returns_empty_for_empty_audio(self):
+        """With _model set (faked), empty audio should return ''."""
+        from cv2t.engine.whisper import WhisperEngine
+        engine = WhisperEngine()
+        engine._model = "fake"  # bypass the not-loaded guard
+        result = engine.transcribe(np.array([], dtype=np.float32), 16000)
+        self.assertEqual(result, "")
+        engine._model = None  # clean up
+
+    def test_release_model_clears_model(self):
+        from cv2t.engine.whisper import WhisperEngine
+        engine = WhisperEngine()
+        engine._model = "fake"
+        engine._release_model()
+        self.assertIsNone(engine._model)
+        self.assertFalse(engine.is_loaded)
+
+    def test_canary_inherits_speech_engine(self):
+        from cv2t.engine.base import SpeechEngine
+        from cv2t.engine.canary import CanaryEngine
+        self.assertTrue(issubclass(CanaryEngine, SpeechEngine))
+
+    def test_whisper_inherits_speech_engine(self):
+        from cv2t.engine.base import SpeechEngine
+        from cv2t.engine.whisper import WhisperEngine
+        self.assertTrue(issubclass(WhisperEngine, SpeechEngine))

@@ -1,7 +1,8 @@
 $scripts = @(
-    'C:\Coding_Projects\QwenVoiceToText_CV2T_v3\installer\Install-CV2T-Source.ps1',
-    'C:\Coding_Projects\QwenVoiceToText_CV2T_v3\installer\Install-CV2T-Bin.ps1'
+    (Join-Path $PSScriptRoot 'Install-CV2T-Source.ps1'),
+    (Join-Path $PSScriptRoot 'Install-CV2T-Bin.ps1')
 )
+$totalErrors = 0
 foreach ($s in $scripts) {
     $tokens = $null
     $errors = $null
@@ -9,4 +10,6 @@ foreach ($s in $scripts) {
     $name = Split-Path -Leaf $s
     Write-Host "$name : $($errors.Count) parse errors"
     foreach ($e in $errors) { Write-Host "  $($e.Message) at line $($e.Extent.StartLineNumber)" }
+    $totalErrors += $errors.Count
 }
+if ($totalErrors -gt 0) { exit 1 }
