@@ -22,7 +22,7 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 
 ### Recommended: GUI Installer
 
-Download **CV2T-Setup-2.0.0.exe** from [Releases](https://github.com/kwp490/QwenVoiceToText_CV2T_v3/releases) and double-click it. The installer will:
+Download **CV2T-Setup-3.0.0.exe** from [Releases](https://github.com/kwp490/QwenVoiceToText_CV2T_v3/releases) and double-click it. The installer will:
 
 1. Extract application files to `C:\Program Files\CV2T`
 2. Let you choose a speech engine (Whisper or Canary)
@@ -33,7 +33,7 @@ No Python, no command line required.
 
 > **Silent / unattended install:**
 > ```powershell
-> CV2T-Setup-2.0.0.exe /VERYSILENT /ENGINE=whisper
+> CV2T-Setup-3.0.0.exe /VERYSILENT /ENGINE=whisper
 > ```
 > Accepted `/ENGINE=` values: `whisper`, `canary`, `both`
 
@@ -60,7 +60,7 @@ For sysadmins or automated deployments, a PowerShell installer is also available
 ```powershell
 # Run as Administrator
 Set-ExecutionPolicy Bypass -Scope Process -Force
-.\installer\Install-CV2T-Bin.ps1 -ZipPath ".\cv2t-v2.0.0-win64.zip"
+.\installer\Install-CV2T-Bin.ps1 -ZipPath ".\cv2t-v3.0.0-win64.zip"
 ```
 
 ## Settings
@@ -152,7 +152,7 @@ uv run pyinstaller cv2t.spec
 
 # 2. Build the GUI installer (requires Inno Setup 6.x)
 iscc installer\cv2t-setup.iss
-# Output: installer/Output/CV2T-Setup-2.0.0.exe
+# Output: installer/Output/CV2T-Setup-3.0.0.exe
 ```
 
 Or use the combined build script:

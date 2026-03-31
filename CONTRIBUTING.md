@@ -56,7 +56,7 @@ After building the binary, compile the Inno Setup installer:
 ```bash
 # Requires Inno Setup 6.x — https://jrsoftware.org/isdl.php
 iscc installer\cv2t-setup.iss
-# Output: installer/Output/CV2T-Setup-2.0.0.exe
+# Output: installer/Output/CV2T-Setup-3.0.0.exe
 ```
 
 Or run the combined build script:

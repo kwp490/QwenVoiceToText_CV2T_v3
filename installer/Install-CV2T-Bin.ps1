@@ -16,7 +16,7 @@
 .NOTES
     Run in an elevated PowerShell session:
         Set-ExecutionPolicy Bypass -Scope Process -Force
-        .\Install-CV2T-Bin.ps1 -ZipPath ".\cv2t-v2.0.0-win64.zip"
+        .\Install-CV2T-Bin.ps1 -ZipPath ".\cv2t-v3.0.0-win64.zip"
 #>
 
 #Requires -RunAsAdministrator

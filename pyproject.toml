@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cv2t"
-version = "2.0.0"
+version = "3.0.0"
 description = "Native Windows voice-to-text using Canary or Whisper — no Docker, no WSL, no HTTP"
 readme = "README.md"
 license = "MIT"

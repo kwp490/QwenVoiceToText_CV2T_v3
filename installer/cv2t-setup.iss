@@ -1,7 +1,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 ; CV2T Inno Setup Installer Script
 ;
-; Produces a single CV2T-Setup-2.0.0.exe that handles:
+; Produces a single CV2T-Setup-3.0.0.exe that handles:
 ;   - File extraction (from PyInstaller dist/cv2t/ output)
 ;   - Engine selection (Whisper, Canary, or Both)
 ;   - Model download via bundled cv2t.exe download-model
@@ -18,7 +18,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName "CV2T"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "3.0.0"
 #define MyAppPublisher "kwp490"
 #define MyAppURL "https://github.com/kwp490/cv2t"
 #define MyAppExeName "cv2t.exe"
