@@ -58,7 +58,7 @@ def set_clipboard_text(text: str) -> bool:
         ctypes.memmove(p_mem, encoded, buf_size)
         _kernel32.GlobalUnlock(h_mem)
         _user32.SetClipboardData(_CF_UNICODETEXT, h_mem)
-        log.debug("Clipboard set: %s", text[:80])
+        log.debug("Clipboard set: %d chars", len(text))
         return True
     finally:
         _user32.CloseClipboard()

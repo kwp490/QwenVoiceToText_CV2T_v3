@@ -683,7 +683,7 @@ class MainWindow(QMainWindow):
 
         if text:
             self._set_dictation_state(DictationState.SUCCESS)
-            self._log_ui(f"Transcribed: {text}")
+            self._log_ui(f"Transcribed: {len(text)} chars")
             self._add_history(ts, text, success=True)
 
             if self._chk_auto_copy.isChecked():

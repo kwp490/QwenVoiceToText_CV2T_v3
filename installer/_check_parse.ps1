@@ -1,6 +1,5 @@
 $scripts = @(
-    (Join-Path $PSScriptRoot 'Install-CV2T-Source.ps1'),
-    (Join-Path $PSScriptRoot 'Install-CV2T-Bin.ps1')
+    (Join-Path $PSScriptRoot 'Install-CV2T-Source.ps1')
 )
 $totalErrors = 0
 foreach ($s in $scripts) {

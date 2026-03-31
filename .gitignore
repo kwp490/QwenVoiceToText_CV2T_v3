@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Test cache
+.pytest_cache/
+
+# Internal planning docs (not for release)
+plan-*.prompt.md
+
 # Distribution / packaging
 dist/
 build/

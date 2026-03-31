@@ -53,16 +53,6 @@ uv run cv2t download-model --engine canary
 uv run cv2t
 ```
 
-### PowerShell Binary Install (alternative)
-
-For sysadmins or automated deployments, a PowerShell installer is also available:
-
-```powershell
-# Run as Administrator
-Set-ExecutionPolicy Bypass -Scope Process -Force
-.\installer\Install-CV2T-Bin.ps1 -ZipPath ".\cv2t-v3.0.0-win64.zip"
-```
-
 ## Settings
 
 | Setting | Default | Description |
@@ -173,3 +163,7 @@ cv2t --version                                          # Print version
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.

@@ -251,7 +251,7 @@ class CanaryEngine(SpeechEngine):
         texts = []
         for i, chunk in enumerate(chunks):
             text = self._transcribe_chunk(chunk, torch)
-            log.info("Chunk %d/%d: %s", i + 1, len(chunks), text[:80] if text else "(empty)")
+            log.info("Chunk %d/%d: %d chars", i + 1, len(chunks), len(text))
             texts.append(text)
 
         result = stitch_transcripts(texts)

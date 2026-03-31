@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies (whisper + dev)
+        run: uv sync --extra whisper --extra dev
+
+      - name: Build binary with PyInstaller
+        run: uv run pyinstaller cv2t.spec
+
+      - name: Verify binary exists
+        run: |
+          if (!(Test-Path "dist\cv2t\cv2t.exe")) {
+            Write-Error "cv2t.exe not found in dist\cv2t\"
+            exit 1
+          }
+          Write-Host "Binary built successfully: dist\cv2t\cv2t.exe"
+          (Get-Item "dist\cv2t\cv2t.exe").Length / 1MB | ForEach-Object { "Size: {0:N1} MB" -f $_ }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cv2t-binary
+          path: dist/cv2t/
+          retention-days: 7
