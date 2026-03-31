@@ -53,47 +53,47 @@ uv run cv2t
 
 ## Settings
 
-| Setting | Default | Description |
-|---|---|---|
-| `engine` | `whisper` | Speech engine: `canary` or `whisper` |
-| `model_path` | `C:\Program Files\CV2T\models` | Directory for model weights |
-| `device` | `cuda` | Inference device: `cuda` or `cpu` |
-| `language` | `en` | Language code |
-| `inference_timeout` | `30` | Max seconds per transcription |
-| `sample_rate` | `16000` | Recording sample rate (Hz) — audio is always resampled to 16 kHz for engines |
-| `silence_threshold` | `0.0015` | RMS threshold for silence detection |
-| `auto_copy` | `true` | Auto-copy transcription to clipboard |
-| `auto_paste` | `true` | Auto-paste via Ctrl+V after transcription |
+| Setting             | Default                            | Description                                              |
+|---------------------|------------------------------------|----------------------------------------------------------|
+| `engine`            | `whisper`                          | Speech engine: `canary` or `whisper`                     |
+| `model_path`        | `C:\Program Files\CV2T\models`     | Directory for model weights                              |
+| `device`            | `cuda`                             | Inference device: `cuda` or `cpu`                        |
+| `language`          | `en`                               | Language code                                            |
+| `inference_timeout` | `30`                               | Max seconds per transcription                            |
+| `sample_rate`       | `16000`                            | Recording sample rate (Hz) — resampled to 16 kHz         |
+| `silence_threshold` | `0.0015`                           | RMS threshold for silence detection                      |
+| `auto_copy`         | `true`                             | Auto-copy transcription to clipboard                     |
+| `auto_paste`        | `true`                             | Auto-paste via Ctrl+V after transcription                |
 
 Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
 
 ## Hotkeys
 
-| Hotkey | Action |
-|---|---|
-| `Ctrl+Alt+P` | Start recording |
-| `Ctrl+Alt+L` | Stop recording & transcribe |
-| `Ctrl+Alt+Q` | Quit application |
+| Hotkey               | Action                               |
+| -------------------- | ------------------------------------ |
+| `Ctrl+Alt+P`         | Start recording                      |
+| `Ctrl+Alt+L`         | Stop recording & transcribe          |
+| `Ctrl+Alt+Q`         | Quit application                     |
 
 Hotkeys are configurable in Settings.
 
 ## Architecture
 
 ```
-┌──────────────────────┐
-│      CV2T GUI        │
-│  (PySide6 / Qt)      │
-├──────────────────────┤
-│   Engine Abstraction │
-│   ┌───────┐ ┌──────┐│
-│   │Canary │ │Whisper││
-│   │(NeMo) │ │(CT2) ││
-│   └───┬───┘ └──┬───┘│
-│       │        │     │
-│       ▼        ▼     │
-│     NVIDIA GPU       │
-│     (CUDA)           │
-└──────────────────────┘
+┌───────────────────────┐
+│      CV2T GUI         │
+│  (PySide6 / Qt)       │
+├───────────────────────┤
+│   Engine Abstraction  │
+│   ┌───────┐ ┌───────┐ │
+│   │Canary │ │Whisper│ │
+│   │(NeMo) │ │(CT2)  │ │
+│   └───┬───┘ └──┬────┘ │
+│       │        │      │
+│       ▼        ▼      │
+│     NVIDIA GPU        │
+│     (CUDA)            │
+└───────────────────────┘
 ```
 
 ## Model Comparison
