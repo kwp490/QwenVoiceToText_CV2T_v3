@@ -1,8 +1,8 @@
 # CV2T — Native Windows Voice-to-Text
 
-**Real-time speech transcription on Windows using NVIDIA GPUs — no Docker, no WSL, no HTTP server.**
+**Real-time speech transcription on Windows using NVIDIA GPUs.**
 
-CV2T replaces the v1 Docker-based architecture with **native in-process inference**. Press a hotkey, speak, and your transcribed text is pasted into the active window.
+Press a hotkey, speak, and your transcribed text is pasted into the active window. GPU-accelerated, runs natively — no setup complexity.
 
 ## Download & Install
 
@@ -31,7 +31,7 @@ The installer will:
 - **Global hotkeys**: Start/stop recording from any application
 - **Auto-paste**: Transcribed text goes directly to your active window
 - **GPU-accelerated**: Both engines leverage NVIDIA CUDA
-- **No Docker, no WSL, no HTTP** — everything runs natively on Windows
+- **Runs natively on Windows** — single installer, no dependencies
 
 ## Source Install (both engines)
 
