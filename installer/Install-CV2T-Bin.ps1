@@ -216,6 +216,24 @@ foreach ($dir in @($ModelsDir, $ConfigDir, $LogsDir, $TempDir)) {
 if ($installCanary) {
     $venvPython = "$InstallDir\.venv\Scripts\python.exe"
     if (Test-Path $venvPython) {
+        # Show antimalware notice if uv is available (it will be used for package repairs)
+        if (Get-Command uv -ErrorAction SilentlyContinue) {
+            Write-Host ""
+            Write-Host "  ┌─────────────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+            Write-Host "  │  ANTIMALWARE NOTICE                                            │" -ForegroundColor Yellow
+            Write-Host "  │                                                                │" -ForegroundColor Yellow
+            Write-Host "  │  The next steps may use uv.exe (by Astral) to repair Python    │" -ForegroundColor Yellow
+            Write-Host "  │  packages. Some antimalware tools (e.g. Malwarebytes) may      │" -ForegroundColor Yellow
+            Write-Host "  │  flag or quarantine uv.exe as a false positive.                │" -ForegroundColor Yellow
+            Write-Host "  │                                                                │" -ForegroundColor Yellow
+            Write-Host "  │  If this happens, add uv.exe to your antimalware allow-list.  │" -ForegroundColor Yellow
+            Write-Host "  │  uv is an open-source Python package manager:                  │" -ForegroundColor Yellow
+            Write-Host "  │  https://github.com/astral-sh/uv                              │" -ForegroundColor Yellow
+            Write-Host "  └─────────────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+            Write-Host ""
+            Read-Host "  Press Enter to continue"
+        }
+
         # Ensure wandb is functional (NeMo imports it transitively)
         Write-Step "Verifying wandb installation..."
         $prevPref = $ErrorActionPreference
@@ -226,7 +244,7 @@ if ($installCanary) {
             if (Get-Command uv -ErrorAction SilentlyContinue) {
                 Write-Warn "wandb is broken or missing — reinstalling..."
                 Push-Location $InstallDir
-                Invoke-NativeCommand 'Fix wandb' { uv pip install --python .venv\Scripts\python.exe --force-reinstall wandb }
+                Invoke-NativeCommand 'Fix wandb' { uv pip install --python .venv\Scripts\python.exe --reinstall-package wandb wandb }
                 Pop-Location
                 Write-Ok "wandb reinstalled"
             } else {
@@ -315,12 +333,13 @@ if ($installCanary) {
             Pop-Location
             Write-Ok "huggingface-hub pinned to compatible version"
         } elseif ($needsFix) {
-            Write-Warn "Cannot fix automatically (uv not available). Run manually: uv pip install `"huggingface-hub>=0.34.0,<1.0`""
+            Write-Warn "Cannot fix automatically (uv not available)."
+            Write-Host "  If uv is installed, run manually: uv pip install --python .venv\Scripts\python.exe `"huggingface-hub>=0.34.0,<1.0`"" -ForegroundColor Yellow
         }
     } else {
         Write-Warn "Cannot verify Canary dependencies — no virtual environment found."
         Write-Host "  Binary installs bundle dependencies. If Canary fails at runtime:" -ForegroundColor Yellow
-        Write-Host "    1. Install uv: irm https://astral.sh/uv/install.ps1 | iex" -ForegroundColor Yellow
+        Write-Host "    1. Install uv: winget install astral-sh.uv" -ForegroundColor Yellow
         Write-Host "    2. Install torch: uv pip install --index-url https://download.pytorch.org/whl/cu128 torch" -ForegroundColor Yellow
         Write-Host "    3. Or switch to Whisper engine in Settings." -ForegroundColor Yellow
     }
@@ -465,15 +484,23 @@ $cfg | ConvertTo-Json -Depth 10 | ForEach-Object {
 Write-Ok "Default engine set to '$defaultEngine' in $settingsFile"
 
 # ── Set permissions (current user gets Modify on install dir) ────────────────
-Write-Step "Setting directory permissions..."
+Write-Step "Checking directory permissions..."
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $acl = Get-Acl $InstallDir
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $currentUser, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
-)
-$acl.SetAccessRule($rule)
-Set-Acl $InstallDir $acl
-Write-Ok "Granted Modify permission to $currentUser on $InstallDir"
+$existingRule = $acl.Access | Where-Object {
+    $_.IdentityReference.Value -eq $currentUser -and
+    $_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify
+}
+if ($existingRule) {
+    Write-Already "$currentUser already has Modify on $InstallDir"
+} else {
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $currentUser, "Modify", "ContainerInherit,ObjectInherit", "None", "Allow"
+    )
+    $acl.SetAccessRule($rule)
+    Set-Acl $InstallDir $acl
+    Write-Ok "Granted Modify permission to $currentUser on $InstallDir"
+}
 
 # ── Create desktop shortcut ──────────────────────────────────────────────────
 Write-Step "Creating desktop shortcut..."

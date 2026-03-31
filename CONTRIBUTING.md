@@ -49,6 +49,26 @@ uv sync --extra whisper --extra dev
 uv run pyinstaller cv2t.spec
 ```
 
+## Building the Installer
+
+After building the binary, compile the Inno Setup installer:
+
+```bash
+# Requires Inno Setup 6.x — https://jrsoftware.org/isdl.php
+iscc installer\cv2t-setup.iss
+# Output: installer/Output/CV2T-Setup-2.0.0.exe
+```
+
+Or run the combined build script:
+
+```powershell
+.\installer\Build-Installer.ps1
+```
+
+The Inno Setup script ([installer/cv2t-setup.iss](installer/cv2t-setup.iss)) bundles the
+PyInstaller output from `dist/cv2t/`, adds a custom engine-selection wizard page,
+downloads models post-install via `cv2t.exe download-model`, and creates shortcuts.
+
 ## Filing Issues
 
 Please include the output of "Copy Diagnostics" from the GUI when reporting bugs.

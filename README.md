@@ -20,6 +20,23 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 
 ## Quick Start
 
+### Recommended: GUI Installer
+
+Download **CV2T-Setup-2.0.0.exe** from [Releases](https://github.com/kwp490/cv2t/releases) and double-click it. The installer will:
+
+1. Extract application files to `C:\Program Files\CV2T`
+2. Let you choose a speech engine (Whisper or Canary)
+3. Download the model (~1–3 GB)
+4. Create desktop and Start Menu shortcuts
+
+No Python, no command line required.
+
+> **Silent / unattended install:**
+> ```powershell
+> CV2T-Setup-2.0.0.exe /VERYSILENT /ENGINE=whisper
+> ```
+> Accepted `/ENGINE=` values: `whisper`, `canary`, `both`
+
 ### Source Install (both engines)
 
 ```powershell
@@ -36,9 +53,9 @@ uv run cv2t download-model --engine canary
 uv run cv2t
 ```
 
-### Binary Install (Whisper-only .exe)
+### PowerShell Binary Install (alternative)
 
-Download the latest release zip from [Releases](https://github.com/kwp490/cv2t/releases), then run the installer:
+For sysadmins or automated deployments, a PowerShell installer is also available:
 
 ```powershell
 # Run as Administrator
@@ -123,14 +140,25 @@ Add-MpPreference -ExclusionPath "C:\Program Files\CV2T"
 Add-MpPreference -ExclusionProcess "C:\Program Files\CV2T\cv2t.exe"
 ```
 
-## Building the .exe
+## Building the Installer
 
 The binary build is **Whisper-only** (excludes torch/NeMo):
 
 ```bash
+# 1. Build the binary
 uv sync --extra whisper --extra dev
 uv run pyinstaller cv2t.spec
 # Output: dist/cv2t/cv2t.exe
+
+# 2. Build the GUI installer (requires Inno Setup 6.x)
+iscc installer\cv2t-setup.iss
+# Output: installer/Output/CV2T-Setup-2.0.0.exe
+```
+
+Or use the combined build script:
+
+```powershell
+.\installer\Build-Installer.ps1
 ```
 
 ## CLI

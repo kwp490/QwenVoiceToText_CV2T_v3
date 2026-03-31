@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Copies the local CV2T source tree to the install directory, installs
-    Python 3.11 via uv, syncs all dependencies, downloads model weights,
-    and creates a desktop shortcut.
+    Python 3.11 and uv via winget, syncs all dependencies, downloads model
+    weights, and creates a desktop shortcut.
 
     Requires Administrator elevation. Installs everything to C:\Program Files\CV2T\
     (binaries, models, config, logs, temp).
@@ -184,27 +184,72 @@ if ($installWhisper) { $selectedNames += 'whisper' }
 if ($installCanary)  { $selectedNames += 'canary' }
 Write-Ok "Selected engine(s): $($selectedNames -join ', ')"
 
+# ── Antimalware notice ────────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "  ┌─────────────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+Write-Host "  │  ANTIMALWARE NOTICE                                            │" -ForegroundColor Yellow
+Write-Host "  │                                                                │" -ForegroundColor Yellow
+Write-Host "  │  This installer uses uv.exe (by Astral) to manage Python      │" -ForegroundColor Yellow
+Write-Host "  │  packages. Some antimalware tools (e.g. Malwarebytes) may      │" -ForegroundColor Yellow
+Write-Host "  │  flag or quarantine uv.exe as a false positive.                │" -ForegroundColor Yellow
+Write-Host "  │                                                                │" -ForegroundColor Yellow
+Write-Host "  │  If this happens, add uv.exe to your antimalware allow-list   │" -ForegroundColor Yellow
+Write-Host "  │  before continuing. uv is an open-source Python package       │" -ForegroundColor Yellow
+Write-Host "  │  manager (https://github.com/astral-sh/uv) installed via      │" -ForegroundColor Yellow
+Write-Host "  │  winget and is required to resolve and sync dependencies.      │" -ForegroundColor Yellow
+Write-Host "  └─────────────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+Write-Host ""
+Read-Host "  Press Enter to continue"
+
 # ── Install uv ───────────────────────────────────────────────────────────────
 Write-Step "Checking for uv package manager..."
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     Write-Already "uv already installed: $(uv --version)"
 } else {
-    Write-Host "  Installing uv..."
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-    $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+    Write-Host "  Installing uv via winget..."
+    winget install --id astral-sh.uv --exact --accept-package-agreements --accept-source-agreements
+    # Refresh PATH so the current session sees uv
+    $machPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $env:PATH = "$userPath;$machPath"
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        throw "uv installation succeeded but 'uv' is not on PATH. Restart your terminal and re-run."
+    }
     Write-Ok "uv installed: $(uv --version)"
 }
 
+# Tell uv to use the system Python instead of downloading its own copy.
+# Set this BEFORE any uv python commands so it never considers managed interpreters.
+$env:UV_PYTHON_PREFERENCE = 'only-system'
+
 # ── Install Python 3.11 ─────────────────────────────────────────────────────
 Write-Step "Checking for Python 3.11..."
-$py311 = uv python find 3.11 2>$null
+# Look for an existing system Python 3.11 (winget/official installer).
+$py311 = (Get-Command python3.11 -ErrorAction SilentlyContinue).Source
+if (-not $py311) {
+    # Also check the default 'py' launcher
+    try { $py311 = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null).Trim() } catch { $py311 = $null }
+}
 if ($py311) {
     Write-Already "Python 3.11 already available: $py311"
 } else {
-    Write-Host "  Installing Python 3.11 via uv..."
-    uv python install 3.11
+    Write-Host "  Installing Python 3.11 via winget..."
+    winget install --id Python.Python.3.11 --exact --accept-package-agreements --accept-source-agreements
+    # Refresh PATH so the current session sees the new Python
+    $machPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $env:PATH = "$userPath;$machPath"
+    # Re-discover after install
+    $py311 = (Get-Command python3.11 -ErrorAction SilentlyContinue).Source
+    if (-not $py311) {
+        try { $py311 = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null).Trim() } catch { $py311 = $null }
+    }
     Write-Ok "Python 3.11 installed"
 }
+if (-not $py311 -or -not (Test-Path $py311)) {
+    throw "Python 3.11 is not discoverable after installation. Restart PowerShell and re-run."
+}
+Write-Ok "Using Python: $py311"
 
 # ── Copy/sync source to install dir ──────────────────────────────────────────
 Write-Step "Setting up CV2T repository..."
@@ -265,9 +310,9 @@ $uvExtras = '--extra dev'
 if ($installWhisper) { $uvExtras += ' --extra whisper' }
 if ($installCanary)  { $uvExtras += ' --extra canary' }
 Push-Location $InstallDir
-Invoke-NativeCommand 'uv sync' ([scriptblock]::Create("uv sync $uvExtras"))
+Invoke-NativeCommand 'uv sync' ([scriptblock]::Create("uv sync --python `"$py311`" $uvExtras"))
 if ($installWhisper) {
-    Invoke-NativeCommand 'Refresh faster-whisper' { uv pip install --python .venv\Scripts\python.exe --upgrade "faster-whisper>=1.1" }
+    Invoke-NativeCommand 'Refresh faster-whisper' { uv pip install --python .venv\Scripts\python.exe --upgrade-package faster-whisper "faster-whisper>=1.1" }
 }
 Pop-Location
 Write-Ok "Dependencies synced"
@@ -403,7 +448,7 @@ if ($installCanary) {
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "wandb is broken or missing — reinstalling..."
         Push-Location $InstallDir
-        Invoke-NativeCommand 'Fix wandb' { uv pip install --python .venv\Scripts\python.exe --force-reinstall wandb }
+        Invoke-NativeCommand 'Fix wandb' { uv pip install --python .venv\Scripts\python.exe --reinstall-package wandb wandb }
         Pop-Location
         Write-Ok "wandb reinstalled"
     } else {
@@ -618,46 +663,28 @@ if (Test-Path $shortcutPath) {
 } else {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = "uv"
-    $shortcut.Arguments = "run cv2t"
+    $shortcut.TargetPath = "$InstallDir\.venv\Scripts\pythonw.exe"
+    $shortcut.Arguments = "-m cv2t"
     $shortcut.WorkingDirectory = $InstallDir
     $shortcut.Description = "CV2T - Voice to Text"
     $shortcut.Save()
     Write-Ok "Shortcut created at $shortcutPath"
 }
 
-# ── Windows Defender exclusions ──────────────────────────────────────────────
-Write-Step "Checking Windows Defender exclusions..."
-try {
-    $prefs = Get-MpPreference -ErrorAction SilentlyContinue
-    $pathExclusions = @($prefs.ExclusionPath)
-    $needInstallDir = $InstallDir -notin $pathExclusions
-
-    if ($needInstallDir) {
-        Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
-        Write-Ok "Defender exclusions added"
-    } else {
-        Write-Already "Defender exclusions already configured"
-    }
-} catch {
-    Write-Warn "Could not check/add Defender exclusions (non-critical)"
-}
-
 # ── Final smoke test ──────────────────────────────────────────────────────────
 Write-Step "Running smoke test..."
+$venvPython = "$InstallDir\.venv\Scripts\python.exe"
 $prevPref = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    Push-Location $InstallDir
-    $smokeResult = & uv run cv2t --version 2>&1
-    Pop-Location
+    $smokeResult = & $venvPython -m cv2t --version 2>&1
     foreach ($line in $smokeResult) { Write-Host "  $line" }
 } finally {
     $ErrorActionPreference = $prevPref
 }
 if ($LASTEXITCODE -ne 0) {
     Write-Warn "Smoke test failed — CV2T may not launch correctly"
-    Write-Host "  Try running manually: cd '$InstallDir'; uv run cv2t --version" -ForegroundColor Yellow
+    Write-Host "  Try running manually: & '$InstallDir\.venv\Scripts\python.exe' -m cv2t --version" -ForegroundColor Yellow
     Write-Host "  Check logs at: $LogsDir\cv2t.log" -ForegroundColor Yellow
 } else {
     Write-Ok "Smoke test passed: $($smokeResult -join ' ')"
@@ -668,4 +695,4 @@ Write-Host "  Install dir: $InstallDir"
 Write-Host "  Models dir:  $ModelsDir"
 Write-Host "  Config dir:  $ConfigDir"
 Write-Host "  Logs dir:    $LogsDir"
-Write-Host "  Launch with: cd '$InstallDir'; uv run cv2t"
+Write-Host "  Launch with: $InstallDir\.venv\Scripts\python.exe -m cv2t"

@@ -31,6 +31,12 @@ desktop.ini
 # PyInstaller
 *.spec.bak
 
+# Inno Setup output
+installer/Output/
+
+# VS Code workspace files
+*.code-workspace
+
 # Models (user downloads)
 models/
 
