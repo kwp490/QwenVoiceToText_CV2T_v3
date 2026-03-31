@@ -6,7 +6,7 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 
 ## Features
 
-- **Two engine options**: NVIDIA Canary Qwen 2.5B (ONNX) or Faster-Whisper (CTranslate2)
+- **Two engine options**: NVIDIA Canary Qwen 2.5B (NeMo) or Faster-Whisper (CTranslate2)
 - **Global hotkeys**: Start/stop recording from any application
 - **Auto-paste**: Transcribed text goes directly to your active window
 - **GPU-accelerated**: Both engines leverage NVIDIA CUDA
@@ -16,13 +16,13 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 
 - Windows 11 (64-bit)
 - NVIDIA GPU (RTX 30-series or newer recommended, 6+ GB VRAM)
-- NVIDIA Driver 525+ with CUDA support
+- NVIDIA Driver 525+ with CUDA support (RTX 50-series Blackwell requires 560+)
 
 ## Quick Start
 
 ### Recommended: GUI Installer
 
-Download **CV2T-Setup-2.0.0.exe** from [Releases](https://github.com/kwp490/cv2t/releases) and double-click it. The installer will:
+Download **CV2T-Setup-2.0.0.exe** from [Releases](https://github.com/kwp490/QwenVoiceToText_CV2T_v3/releases) and double-click it. The installer will:
 
 1. Extract application files to `C:\Program Files\CV2T`
 2. Let you choose a speech engine (Whisper or Canary)
@@ -44,8 +44,8 @@ No Python, no command line required.
 irm https://astral.sh/uv/install.ps1 | iex
 
 # 2. Clone and install
-git clone https://github.com/kwp490/cv2t.git
-cd cv2t
+git clone https://github.com/kwp490/QwenVoiceToText_CV2T_v3.git
+cd QwenVoiceToText_CV2T_v3
 uv sync --extra all
 
 # 3. Download model and launch
@@ -110,9 +110,9 @@ Hotkeys are configurable in Settings.
 
 ## Model Comparison
 
-| | Canary (ONNX) | Whisper (CTranslate2) |
+| | Canary (NeMo) | Whisper (CTranslate2) |
 |---|---|---|
-| **Model** | onnx-community/canary-qwen-2.5b-ONNX | large-v3-turbo (via faster-whisper) |
+| **Model** | nvidia/canary-qwen-2.5b | large-v3-turbo (via faster-whisper) |
 | **VRAM** | ~5 GB | ~3 GB |
 | **Accuracy** | Excellent | Very good |
 | **Speed** | Fast | Very fast |
@@ -125,7 +125,7 @@ Hotkeys are configurable in Settings.
 | Component | Whisper (binary) | Canary (source) |
 |---|---|---|
 | CUDA Toolkit | 12.x | 12.x |
-| cuDNN | 9.x | 9.x (via torch) |
+| cuDNN | Not required | 9.x (via torch) |
 | CTranslate2 | 4.5.x | — |
 | torch | NOT required | 2.1+ (via NeMo) |
 | NeMo | — | 2.0+ |
