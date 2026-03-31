@@ -777,13 +777,18 @@ class MainWindow(QMainWindow):
 
         old_engine = self.settings.engine
         old_model_path = self.settings.model_path
+        old_device = self.settings.device
 
         dlg = SettingsDialog(self.settings, parent=self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
             self._apply_settings()
 
-            # If engine or model path changed, prompt to reload
-            if self.settings.engine != old_engine or self.settings.model_path != old_model_path:
+            # If engine, model path, or device changed, prompt to reload
+            if (
+                self.settings.engine != old_engine
+                or self.settings.model_path != old_model_path
+                or self.settings.device != old_device
+            ):
                 # Switching between CTranslate2-based and PyTorch-based engines
                 # requires a full process restart (CUDA runtimes conflict).
                 engine_family_changed = (

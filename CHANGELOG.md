@@ -21,6 +21,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Source install path with `uv sync` for developers and Canary users
 - `download-model` CLI command for offline model setup
 
+### Fixed
+- Settings: changing device (CUDA → CPU) now correctly prompts to reload the model
+- Settings: device selector is disabled for Canary engine (requires CUDA)
+
 ### Changed
 - "Server" panel replaced with "Model Engine" panel in the GUI
 

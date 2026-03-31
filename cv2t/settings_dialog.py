@@ -33,6 +33,9 @@ from .engine import ENGINES, get_available_engines
 
 log = logging.getLogger(__name__)
 
+# Engines that require CUDA and cannot run on CPU.
+_CUDA_ONLY_ENGINES = frozenset({"canary"})
+
 
 class SettingsDialog(QDialog):
     """Modal dialog for editing application settings."""
@@ -77,6 +80,9 @@ class SettingsDialog(QDialog):
         self._device_combo = QComboBox()
         self._device_combo.addItems(["cuda", "cpu"])
         engine_form.addRow("Device:", self._device_combo)
+
+        # Lock device to CUDA when a CUDA-only engine is selected
+        self._engine_combo.currentTextChanged.connect(self._on_engine_changed)
 
         self._language = QLineEdit()
         self._language.setMaximumWidth(100)
@@ -188,6 +194,9 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self._mic_combo.setCurrentIndex(idx)
 
+        # Apply engine-specific device constraints
+        self._on_engine_changed(self._engine_combo.currentText())
+
     def _save_and_accept(self) -> None:
         s = self.settings
         s.engine = self._engine_combo.currentText()
@@ -212,6 +221,18 @@ class SettingsDialog(QDialog):
         self.accept()
 
     # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def _on_engine_changed(self, engine_name: str) -> None:
+        """Enable or disable the device combo based on engine CPU support."""
+        if engine_name in _CUDA_ONLY_ENGINES:
+            self._device_combo.setCurrentText("cuda")
+            self._device_combo.setEnabled(False)
+            self._device_combo.setToolTip(
+                f"The {engine_name} engine requires CUDA and cannot run on CPU."
+            )
+        else:
+            self._device_combo.setEnabled(True)
+            self._device_combo.setToolTip("")
 
     def _browse_model_path(self) -> None:
         path = QFileDialog.getExistingDirectory(
