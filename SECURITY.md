@@ -30,9 +30,10 @@ Instead, email the maintainer directly or use [GitHub's private vulnerability re
 
 ## Known Security Considerations
 
-- The `keyboard` library uses low-level keyboard hooks (`SetWindowsHookEx`) for global hotkeys. Antivirus software may flag this behavior.
-- The installer requests Administrator privileges to write to `C:\Program Files\CV2T`.
-- Windows Defender exclusions are added during installation to prevent false positives on the binary and install directory.
+- **Keyboard hooks**: The `keyboard` library uses low-level hooks (`SetWindowsHookEx`) for global hotkeys. Antivirus or anti-malware software may flag this as suspicious — it is a false positive. CV2T only listens for the specific hotkey combinations you configure.
+- **Administrator privileges**: The installer requires elevation to write to `C:\Program Files\CV2T`.
+- **Defender exclusions**: The GUI installer automatically adds Windows Defender exclusions for the install directory and `cv2t.exe` to prevent false positives.
+- **`uv.exe` false positives**: Some anti-malware tools (e.g. Malwarebytes) may quarantine `uv.exe` during source installs. If this happens, restore it and add it to your allow list. [uv](https://github.com/astral-sh/uv) is a widely used open-source Python package manager.
 
 ## Privacy & Data Handling
 

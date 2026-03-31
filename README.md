@@ -4,6 +4,27 @@
 
 CV2T replaces the v1 Docker-based architecture with **native in-process inference**. Press a hotkey, speak, and your transcribed text is pasted into the active window.
 
+## Download & Install
+
+> **[Download CV2T-Setup-3.0.0.exe](https://github.com/kwp490/QwenVoiceToText_CV2T_v3/releases/latest)**
+>
+> Double-click the installer and follow the prompts. No Python, no command line required.
+
+The installer will:
+
+1. Extract application files to `C:\Program Files\CV2T`
+2. Let you choose a speech engine (Whisper or Canary)
+3. Download the model (~1–3 GB)
+4. Create desktop and Start Menu shortcuts
+
+**Requirements:** Windows 10/11 (64-bit), NVIDIA GPU (RTX 30-series or newer, 6+ GB VRAM), NVIDIA Driver 525+ (RTX 50-series Blackwell requires 560+).
+
+> **Silent / unattended install:**
+> ```powershell
+> CV2T-Setup-3.0.0.exe /VERYSILENT /ENGINE=whisper
+> ```
+> Accepted `/ENGINE=` values: `whisper`, `canary`, `both`
+
 ## Features
 
 - **Two engine options**: NVIDIA Canary Qwen 2.5B (NeMo) or Faster-Whisper (CTranslate2)
@@ -12,32 +33,9 @@ CV2T replaces the v1 Docker-based architecture with **native in-process inferenc
 - **GPU-accelerated**: Both engines leverage NVIDIA CUDA
 - **No Docker, no WSL, no HTTP** — everything runs natively on Windows
 
-## Requirements
+## Source Install (both engines)
 
-- Windows 11 (64-bit)
-- NVIDIA GPU (RTX 30-series or newer recommended, 6+ GB VRAM)
-- NVIDIA Driver 525+ with CUDA support (RTX 50-series Blackwell requires 560+)
-
-## Quick Start
-
-### Recommended: GUI Installer
-
-Download **CV2T-Setup-3.0.0.exe** from [Releases](https://github.com/kwp490/QwenVoiceToText_CV2T_v3/releases) and double-click it. The installer will:
-
-1. Extract application files to `C:\Program Files\CV2T`
-2. Let you choose a speech engine (Whisper or Canary)
-3. Download the model (~1–3 GB)
-4. Create desktop and Start Menu shortcuts
-
-No Python, no command line required.
-
-> **Silent / unattended install:**
-> ```powershell
-> CV2T-Setup-3.0.0.exe /VERYSILENT /ENGINE=whisper
-> ```
-> Accepted `/ENGINE=` values: `whisper`, `canary`, `both`
-
-### Source Install (both engines)
+For developers or users who want the Canary engine (requires Python):
 
 ```powershell
 # 1. Install uv
@@ -100,35 +98,50 @@ Hotkeys are configurable in Settings.
 
 ## Model Comparison
 
-| | Canary (NeMo) | Whisper (CTranslate2) |
-|---|---|---|
-| **Model** | nvidia/canary-qwen-2.5b | large-v3-turbo (via faster-whisper) |
-| **VRAM** | ~5 GB | ~3 GB |
-| **Accuracy** | Excellent | Very good |
-| **Speed** | Fast | Very fast |
-| **torch required** | Yes | No |
-| **Distribution** | Source install only | Source or .exe |
-| **Max input** | 40s (auto-chunked) | Unlimited (VAD) |
+|                      | Canary (NeMo)                       | Whisper (CTranslate2)                      |
+| -------------------- | ----------------------------------- | ------------------------------------------ |
+| **Model**            | nvidia/canary-qwen-2.5b             | large-v3-turbo (via faster-whisper)        |
+| **VRAM**             | ~5 GB                               | ~3 GB                                      |
+| **Accuracy**         | Excellent                           | Very good                                  |
+| **Speed**            | Fast                                | Very fast                                  |
+| **torch required**   | Yes                                 | No                                         |
+| **Distribution**     | Source install only                  | Source or .exe                              |
+| **Max input**        | 40 s (auto-chunked)                 | Unlimited (VAD)                            |
 
 ## GPU Dependency Matrix
 
-| Component | Whisper (binary) | Canary (source) |
-|---|---|---|
-| CUDA Toolkit | 12.x | 12.x |
-| cuDNN | Not required | 9.x (via torch) |
-| CTranslate2 | 4.5.x | — |
-| torch | NOT required | 2.1+ (via NeMo) |
-| NeMo | — | 2.0+ |
+| Component            | Whisper (binary)                    | Canary (source)                            |
+| -------------------- | ----------------------------------- | ------------------------------------------ |
+| CUDA Toolkit         | 12.x                                | 12.x                                       |
+| cuDNN                | Not required                        | 9.x (via torch)                            |
+| CTranslate2          | 4.5.x                               | —                                          |
+| torch                | NOT required                        | 2.1+ (via NeMo)                            |
+| NeMo                 | —                                   | 2.0+                                       |
 
-## Windows Defender
+## Antivirus & Anti-Malware Notes
 
-The `keyboard` library uses low-level keyboard hooks (`SetWindowsHookEx`) which antivirus software may flag. Add these exclusions:
+CV2T uses low-level keyboard hooks (`SetWindowsHookEx`) for global hotkeys. Some antivirus or anti-malware tools may flag this as suspicious — it is a **false positive**. The application only listens for the specific hotkey combinations you configure; it does not capture or log general keystrokes.
+
+### Recommended exclusions
+
+Add these exclusions in your antivirus / anti-malware software to prevent interference:
+
+| Path / Process                             | Why                                                    |
+| ------------------------------------------ | ------------------------------------------------------ |
+| `C:\Program Files\CV2T\`                   | Install directory — contains the app and CUDA DLLs     |
+| `C:\Program Files\CV2T\cv2t.exe`           | Main executable — flagged due to keyboard hooks         |
+| `uv.exe` (if using source install)         | Python package manager — sometimes flagged by Malwarebytes and other tools |
+
+**Windows Defender (PowerShell, run as Administrator):**
 
 ```powershell
-# Run as Administrator
 Add-MpPreference -ExclusionPath "C:\Program Files\CV2T"
 Add-MpPreference -ExclusionProcess "C:\Program Files\CV2T\cv2t.exe"
 ```
+
+> **Note:** The GUI installer adds these Defender exclusions automatically during setup.
+
+**Other antivirus / anti-malware software:** Look for "Exclusions", "Allow list", or "Authorized applications" in your security software settings and add the paths above. If `uv.exe` is quarantined during a source install, restore it and add it to your allow list — [uv](https://github.com/astral-sh/uv) is a widely used open-source Python package manager by Astral.
 
 ## Building the Installer
 
