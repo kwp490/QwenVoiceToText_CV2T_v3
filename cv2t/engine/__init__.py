@@ -4,6 +4,7 @@ Engine registry — lazy-loads available engines based on installed dependencies
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from typing import Dict, Type
 
@@ -14,7 +15,11 @@ ENGINES: Dict[str, Type] = {}
 # Canary — requires NeMo + torch (direct import for source installs)
 try:
     from .canary import CanaryEngine
-    ENGINES["canary"] = CanaryEngine
+    if importlib.util.find_spec("torch") is not None:
+        ENGINES["canary"] = CanaryEngine
+    else:
+        log.debug("Canary engine: module importable but torch not installed")
+        raise ImportError("torch not installed")
 except ImportError:
     # Canary subprocess bridge — for binary installs with canary-env
     try:

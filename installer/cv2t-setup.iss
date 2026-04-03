@@ -100,6 +100,8 @@ var
   SummaryPage: TWizardPage;
   SummaryMemo: TNewMemo;
   DetectedGPU: String;
+  DetectedGPU_Name: String;
+  DetectedVRAM_MB: Integer;
 
 // ── GPU detection ───────────────────────────────────────────────────────────
 function DetectGPU: String;
@@ -107,8 +109,12 @@ var
   ResultCode: Integer;
   TempFile: String;
   Lines: TArrayOfString;
+  Raw, Token: String;
+  CommaPos: Integer;
 begin
   Result := '';
+  DetectedGPU_Name := '';
+  DetectedVRAM_MB := 0;
   TempFile := ExpandConstant('{tmp}\gpu_detect.txt');
   if Exec('cmd.exe',
       '/C nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits > "' + TempFile + '" 2>&1',
@@ -117,10 +123,32 @@ begin
     if (ResultCode = 0) and LoadStringsFromFile(TempFile, Lines) then
     begin
       if GetArrayLength(Lines) > 0 then
-        Result := Trim(Lines[0]);
+      begin
+        Raw := Trim(Lines[0]);
+        Result := Raw;
+        // Parse "GPU Name, VRAM_MB" from nvidia-smi CSV output
+        CommaPos := Pos(',', Raw);
+        if CommaPos > 0 then
+        begin
+          DetectedGPU_Name := Trim(Copy(Raw, 1, CommaPos - 1));
+          Token := Trim(Copy(Raw, CommaPos + 1, Length(Raw)));
+          DetectedVRAM_MB := StrToIntDef(Token, 0);
+        end else
+          DetectedGPU_Name := Raw;
+      end;
     end;
   end;
   DeleteFile(TempFile);
+end;
+
+// ── Format VRAM as human-readable GB string ─────────────────────────────────
+function FormatVRAM_GB(MB: Integer): String;
+var
+  GB_Whole, GB_Frac: Integer;
+begin
+  GB_Whole := MB div 1024;
+  GB_Frac  := ((MB mod 1024) * 10) div 1024;
+  Result := IntToStr(GB_Whole) + '.' + IntToStr(GB_Frac) + ' GB';
 end;
 
 // ── Parse /ENGINE= command-line parameter ───────────────────────────────────
@@ -170,75 +198,204 @@ var
 begin
   EnginePage := CreateCustomPage(wpSelectDir,
     'Speech Engine',
-    'CV2T uses the Whisper speech engine for transcription.');
+    'Review your GPU and the speech engines available for CV2T.');
 
+  DetectedGPU := DetectGPU;
   TopPos := 0;
 
-  // GPU info
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section 1 — Your GPU
+  // ═══════════════════════════════════════════════════════════════════════════
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := 0;
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth;
+  Lbl.Caption := 'Your GPU';
+  Lbl.Font.Style := [fsBold];
+  Lbl.Font.Size := 9;
+  TopPos := TopPos + ScaleY(18);
+
+  // GPU details
   GpuInfoLabel := TNewStaticText.Create(EnginePage);
   GpuInfoLabel.Parent := EnginePage.Surface;
-  GpuInfoLabel.Left := 0;
+  GpuInfoLabel.Left := ScaleX(8);
   GpuInfoLabel.Top := TopPos;
-  GpuInfoLabel.Width := EnginePage.SurfaceWidth;
+  GpuInfoLabel.Width := EnginePage.SurfaceWidth - ScaleX(8);
   GpuInfoLabel.AutoSize := False;
   GpuInfoLabel.WordWrap := True;
 
-  DetectedGPU := DetectGPU;
   if DetectedGPU <> '' then
-    GpuInfoLabel.Caption := 'GPU detected: ' + DetectedGPU
-  else
-    GpuInfoLabel.Caption := 'No NVIDIA GPU detected — transcription will fall back to CPU (slower).';
-  GpuInfoLabel.Height := ScaleY(30);
-  TopPos := TopPos + ScaleY(44);
+  begin
+    if DetectedVRAM_MB > 0 then
+      GpuInfoLabel.Caption := DetectedGPU_Name + '  —  ' + FormatVRAM_GB(DetectedVRAM_MB) + ' video memory (VRAM)'
+    else
+      GpuInfoLabel.Caption := DetectedGPU_Name;
+    GpuInfoLabel.Height := ScaleY(18);
+  end else
+  begin
+    GpuInfoLabel.Caption := 'No NVIDIA GPU detected. Transcription will still work, but will be' + #13#10 +
+                            'slower using your CPU.';
+    GpuInfoLabel.Height := ScaleY(32);
+  end;
+  TopPos := TopPos + GpuInfoLabel.Height + ScaleY(4);
 
-  // Whisper engine info
+  if DetectedGPU <> '' then
+  begin
+    // Whisper VRAM check
+    Lbl := TNewStaticText.Create(EnginePage);
+    Lbl.Parent := EnginePage.Surface;
+    Lbl.Left := ScaleX(16);
+    Lbl.Top := TopPos;
+    Lbl.Width := EnginePage.SurfaceWidth - ScaleX(16);
+    if DetectedVRAM_MB >= 3072 then
+    begin
+      Lbl.Caption := #$2713 + '  Whisper needs ~3 GB  —  your GPU has enough';
+      Lbl.Font.Color := clGreen;
+    end else
+    begin
+      Lbl.Caption := #$2717 + '  Whisper needs ~3 GB  —  your GPU may not have enough (CPU fallback available)';
+      Lbl.Font.Color := $0000C0; // dark red
+    end;
+    TopPos := TopPos + ScaleY(18);
+
+    // Canary VRAM check
+    Lbl := TNewStaticText.Create(EnginePage);
+    Lbl.Parent := EnginePage.Surface;
+    Lbl.Left := ScaleX(16);
+    Lbl.Top := TopPos;
+    Lbl.Width := EnginePage.SurfaceWidth - ScaleX(16);
+    if DetectedVRAM_MB >= 5120 then
+    begin
+      Lbl.Caption := #$2713 + '  Canary needs ~5 GB  —  your GPU has enough';
+      Lbl.Font.Color := clGreen;
+    end else
+    begin
+      Lbl.Caption := #$2717 + '  Canary needs ~5 GB  —  not enough VRAM on this GPU';
+      Lbl.Font.Color := $0000C0; // dark red
+    end;
+    TopPos := TopPos + ScaleY(18);
+  end;
+
+  // Section separator
+  TopPos := TopPos + ScaleY(12);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section 2 — What's Being Installed
+  // ═══════════════════════════════════════════════════════════════════════════
   Lbl := TNewStaticText.Create(EnginePage);
   Lbl.Parent := EnginePage.Surface;
   Lbl.Left := 0;
   Lbl.Top := TopPos;
   Lbl.Width := EnginePage.SurfaceWidth;
-  Lbl.AutoSize := False;
-  Lbl.WordWrap := True;
-  Lbl.Height := ScaleY(50);
-  Lbl.Caption := 'This installer will set up the Whisper engine (CTranslate2, large-v3-turbo). ' +
-                  'It provides fast, accurate transcription and requires approximately 3 GB of GPU memory (VRAM). ' +
-                  'The model download is about 1 GB.';
+  Lbl.Caption := 'What''s Being Installed  —  Whisper Engine';
   Lbl.Font.Style := [fsBold];
-  TopPos := TopPos + ScaleY(64);
+  Lbl.Font.Size := 9;
+  TopPos := TopPos + ScaleY(20);
 
-  // Canary info header
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := ScaleX(8);
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
+  Lbl.AutoSize := False;
+  Lbl.WordWrap := True;
+  Lbl.Height := ScaleY(36);
+  Lbl.Caption := 'Whisper is your speech-to-text engine. It listens to your microphone and' + #13#10 +
+                 'converts your voice into text in real time.';
+  TopPos := TopPos + ScaleY(40);
+
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := ScaleX(8);
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
+  Lbl.AutoSize := False;
+  Lbl.WordWrap := True;
+  Lbl.Height := ScaleY(18);
+  Lbl.Caption := 'Uses ~3 GB video memory (VRAM)   ' + #$2022 + '   Model download: ~1 GB';
+  TopPos := TopPos + ScaleY(22);
+
+  // Section separator
+  TopPos := TopPos + ScaleY(12);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Section 3 — Optional Upgrade: Canary Engine
+  // ═══════════════════════════════════════════════════════════════════════════
   Lbl := TNewStaticText.Create(EnginePage);
   Lbl.Parent := EnginePage.Surface;
   Lbl.Left := 0;
   Lbl.Top := TopPos;
   Lbl.Width := EnginePage.SurfaceWidth;
-  Lbl.Caption := 'Want higher accuracy? You can add the Canary engine later:';
-  TopPos := TopPos + ScaleY(24);
+  Lbl.Caption := 'Optional Upgrade  —  Canary Engine';
+  Lbl.Font.Style := [fsBold];
+  Lbl.Font.Size := 9;
+  TopPos := TopPos + ScaleY(20);
 
-  // Canary method 1
   Lbl := TNewStaticText.Create(EnginePage);
   Lbl.Parent := EnginePage.Surface;
-  Lbl.Left := ScaleX(16);
+  Lbl.Left := ScaleX(8);
   Lbl.Top := TopPos;
-  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(16);
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
   Lbl.AutoSize := False;
   Lbl.WordWrap := True;
-  Lbl.Height := ScaleY(30);
-  Lbl.Caption := '1.  Open CV2T, go to Settings, and click "Install Canary Engine".';
-  Lbl.Font.Color := clGray;
-  TopPos := TopPos + ScaleY(30);
+  Lbl.Height := ScaleY(36);
+  Lbl.Caption := 'Canary is a more advanced engine that can deliver higher accuracy,' + #13#10 +
+                 'especially with complex speech. It requires a dedicated NVIDIA GPU.';
+  TopPos := TopPos + ScaleY(40);
 
-  // Canary method 2
   Lbl := TNewStaticText.Create(EnginePage);
   Lbl.Parent := EnginePage.Surface;
-  Lbl.Left := ScaleX(16);
+  Lbl.Left := ScaleX(8);
   Lbl.Top := TopPos;
-  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(16);
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
   Lbl.AutoSize := False;
   Lbl.WordWrap := True;
-  Lbl.Height := ScaleY(30);
-  Lbl.Caption := '2.  Or run the Enable-Canary.ps1 script from the install directory.';
-  Lbl.Font.Color := clGray;
+  Lbl.Height := ScaleY(18);
+  Lbl.Caption := 'Uses ~5 GB VRAM   ' + #$2022 + '   ~10 GB disk space   ' + #$2022 + '   NVIDIA GPU required (no CPU fallback)';
+  TopPos := TopPos + ScaleY(22);
+
+  // Dynamic VRAM status for Canary
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := ScaleX(8);
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
+  if DetectedGPU = '' then
+  begin
+    Lbl.Caption := #$2717 + '  Canary requires an NVIDIA GPU';
+    Lbl.Font.Color := $0000C0; // dark red
+  end else if DetectedVRAM_MB >= 5120 then
+  begin
+    Lbl.Caption := #$2713 + '  Your GPU has enough memory for Canary';
+    Lbl.Font.Color := clGreen;
+  end else
+  begin
+    Lbl.Caption := #$2717 + '  Your GPU may not have enough memory (Canary needs ~5 GB VRAM)';
+    Lbl.Font.Color := $0000C0; // dark red
+  end;
+  TopPos := TopPos + ScaleY(22);
+
+  // How to install Canary later
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := ScaleX(8);
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
+  Lbl.AutoSize := False;
+  Lbl.WordWrap := True;
+  Lbl.Height := ScaleY(18);
+  Lbl.Caption := 'You can add Canary later from:  Settings ' + #$2192 + ' Install Canary Engine';
+  TopPos := TopPos + ScaleY(20);
+
+  // Power-user note
+  Lbl := TNewStaticText.Create(EnginePage);
+  Lbl.Parent := EnginePage.Surface;
+  Lbl.Left := ScaleX(8);
+  Lbl.Top := TopPos;
+  Lbl.Width := EnginePage.SurfaceWidth - ScaleX(8);
+  Lbl.Caption := 'Advanced: you can also run Enable-Canary.ps1 from the install folder.';
+  Lbl.Font.Color := $808080; // medium gray (readable, but secondary)
 end;
 
 // ── "Ready to Install" page customization ───────────────────────────────────

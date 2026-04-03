@@ -96,6 +96,14 @@ class CanaryEngine(SpeechEngine):
 
     def load(self, model_path: str, device: str = "cuda") -> None:
         """Load Canary model — delegates to the dedicated inference thread."""
+        import importlib.util
+
+        if importlib.util.find_spec("torch") is None:
+            raise RuntimeError(
+                "Canary engine requires PyTorch but it is not installed. "
+                "Run installer/Enable-Canary.ps1 to install the required "
+                "dependencies."
+            )
         self._run_on_inf_thread(self._load_impl, model_path, device)
 
     def _load_impl(self, model_path: str, device: str) -> None:

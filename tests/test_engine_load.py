@@ -276,5 +276,63 @@ class TestPyInstallerSpecDependencies(unittest.TestCase):
                 )
 
 
+class TestCanaryTorchGuard(unittest.TestCase):
+    """Canary engine must not register or load when torch is missing."""
+
+    def test_registry_excludes_canary_when_torch_missing(self):
+        """ENGINES must not contain 'canary' when torch is not installed."""
+        import importlib
+        import cv2t.engine as engine_mod
+
+        original_engines = dict(engine_mod.ENGINES)
+        try:
+            def _fake_find_spec(name, *a, **kw):
+                if name == "torch":
+                    return None
+                return _real_find_spec(name, *a, **kw)
+
+            import importlib.util
+            _real_find_spec = importlib.util.find_spec
+
+            with patch.object(importlib.util, "find_spec", side_effect=_fake_find_spec):
+                # Clear and re-execute the registration logic
+                engine_mod.ENGINES.clear()
+                importlib.reload(engine_mod)
+                self.assertNotIn(
+                    "canary",
+                    engine_mod.ENGINES,
+                    "Canary must not register when torch is unavailable",
+                )
+        finally:
+            # Restore original registry so other tests aren't affected
+            engine_mod.ENGINES.clear()
+            engine_mod.ENGINES.update(original_engines)
+
+    def test_canary_load_raises_when_torch_missing(self):
+        """CanaryEngine.load() must raise RuntimeError, not ModuleNotFoundError."""
+        try:
+            from cv2t.engine.canary import CanaryEngine
+        except ImportError:
+            self.skipTest("CanaryEngine not importable in this environment")
+
+        engine = CanaryEngine()
+        try:
+            import importlib.util
+            _real_find_spec = importlib.util.find_spec
+
+            def _fake_find_spec(name, *a, **kw):
+                if name == "torch":
+                    return None
+                return _real_find_spec(name, *a, **kw)
+
+            with patch.object(importlib.util, "find_spec", side_effect=_fake_find_spec):
+                with self.assertRaises(RuntimeError) as ctx:
+                    engine.load("/fake/path", device="cuda")
+                self.assertIn("PyTorch", str(ctx.exception))
+                self.assertIn("Enable-Canary", str(ctx.exception))
+        finally:
+            engine._inf_queue.put(None)  # shut down inference thread
+
+
 if __name__ == "__main__":
     unittest.main()
