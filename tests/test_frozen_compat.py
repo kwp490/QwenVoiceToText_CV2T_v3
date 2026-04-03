@@ -247,5 +247,57 @@ class TestHiddenImportsInSpec(unittest.TestCase):
         )
 
 
+class TestTransitiveDependenciesInSpec(unittest.TestCase):
+    """Transitive dependencies used at runtime must be bundled in the spec.
+
+    Some libraries (e.g. faster-whisper) dynamically import optional packages
+    internally. These won't be caught by AST-scanning CV2T's own source, but
+    they must still be present in the frozen build.
+    """
+
+    def _read_spec(self) -> str:
+        return (_REPO_ROOT / "cv2t.spec").read_text(encoding="utf-8")
+
+    def _parse_hidden_imports(self) -> set[str]:
+        spec_text = self._read_spec()
+        match = re.search(
+            r"hiddenimports\s*=\s*\[(.*?)\]", spec_text, re.DOTALL
+        )
+        assert match, "Could not find hiddenimports in cv2t.spec"
+        return set(re.findall(r"['\"]([^'\"]+)['\"]", match.group(1)))
+
+    def _parse_excludes(self) -> set[str]:
+        spec_text = self._read_spec()
+        match = re.search(
+            r"excludes\s*=\s*\[(.*?)\]", spec_text, re.DOTALL
+        )
+        assert match, "Could not find excludes in cv2t.spec"
+        return set(re.findall(r"['\"]([^'\"]+)['\"]", match.group(1)))
+
+    def test_onnxruntime_in_hiddenimports(self):
+        """onnxruntime must be in hiddenimports — faster-whisper's Silero VAD needs it."""
+        hidden = self._parse_hidden_imports()
+        self.assertIn("onnxruntime", hidden,
+                       "onnxruntime must be in hiddenimports for faster-whisper VAD")
+
+    def test_onnxruntime_not_excluded(self):
+        """onnxruntime must NOT be in the excludes list."""
+        excludes = self._parse_excludes()
+        self.assertNotIn("onnxruntime", excludes,
+                          "onnxruntime must not be excluded — faster-whisper VAD requires it")
+
+    def test_onnxruntime_not_stripped(self):
+        """onnxruntime must not be matched by any _STRIP_PATTERNS regex."""
+        spec_text = self._read_spec()
+        # Extract patterns from _STRIP_PATTERNS
+        patterns = re.findall(r"_re\.compile\(r'([^']+)'", spec_text)
+        for pattern in patterns:
+            self.assertIsNone(
+                re.search(pattern, "onnxruntime", re.IGNORECASE),
+                f"_STRIP_PATTERNS regex r'{pattern}' matches 'onnxruntime' — "
+                "this would strip it from the build (needed for VAD)",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
