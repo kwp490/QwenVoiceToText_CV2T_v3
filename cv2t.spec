@@ -6,12 +6,19 @@ Build: pyinstaller cv2t.spec
 Output: dist/cv2t/cv2t.exe (onedir)
 """
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 block_cipher = None
 
 # Collect PortAudio DLL from sounddevice
 binaries = collect_dynamic_libs('sounddevice')
+
+# Collect faster-whisper data files (Silero VAD ONNX model in assets/)
+datas = []
+try:
+    datas += collect_data_files('faster_whisper')
+except Exception:
+    pass
 
 # Collect CUDA DLLs from ctranslate2 (used by faster-whisper)
 # Filter out cuDNN DLLs — CTranslate2 only needs cuBLAS for Whisper inference.
@@ -51,7 +58,7 @@ a = Analysis(
     ['cv2t/__main__.py'],
     pathex=[],
     binaries=binaries,
-    datas=[
+    datas=datas + [
         ('cv2t/assets', 'cv2t/assets'),
         ('cv2t/engine/canary_worker.py', '.'),
         ('installer/Enable-Canary.ps1', '.'),

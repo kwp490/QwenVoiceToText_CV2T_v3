@@ -298,6 +298,36 @@ class TestTransitiveDependenciesInSpec(unittest.TestCase):
                 "this would strip it from the build (needed for VAD)",
             )
 
+    def test_faster_whisper_data_files_collected(self):
+        """cv2t.spec must collect faster_whisper data files (Silero VAD ONNX model).
+
+        faster-whisper ships a Silero VAD ONNX model in its assets/ directory.
+        PyInstaller only bundles .py files automatically — data files like
+        .onnx must be explicitly collected via collect_data_files or datas.
+        """
+        spec_text = self._read_spec()
+        self.assertIn(
+            "collect_data_files('faster_whisper')",
+            spec_text,
+            "cv2t.spec must call collect_data_files('faster_whisper') to bundle "
+            "the Silero VAD ONNX model (faster_whisper/assets/silero_vad_v6.onnx)",
+        )
+
+    def test_silero_vad_onnx_exists_in_package(self):
+        """The Silero VAD ONNX model must exist in the installed faster_whisper package.
+
+        If the file is missing from the installed package, the frozen build
+        will also miss it — even with collect_data_files.
+        """
+        import faster_whisper
+        pkg_dir = Path(faster_whisper.__file__).parent
+        vad_model = pkg_dir / "assets" / "silero_vad_v6.onnx"
+        self.assertTrue(
+            vad_model.is_file(),
+            f"Silero VAD model not found at {vad_model} — "
+            "faster-whisper VAD will fail at runtime",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
