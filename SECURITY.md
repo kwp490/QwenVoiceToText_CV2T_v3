@@ -34,15 +34,21 @@ Instead, email the maintainer directly or use [GitHub's private vulnerability re
 - **Administrator privileges**: The installer requires elevation to write to `C:\Program Files\CV2T`.
 - **Defender exclusions**: The GUI installer automatically adds Windows Defender exclusions for the install directory and `cv2t.exe` to prevent false positives.
 - **`uv.exe` false positives**: Some anti-malware tools (e.g. Malwarebytes) may quarantine `uv.exe` during source installs. If this happens, restore it and add it to your allow list. [uv](https://github.com/astral-sh/uv) is a widely used open-source Python package manager.
+- **API key handling (Professional Mode)**: OpenAI API keys entered in Settings are held in memory only by default and are **never** written to `settings.json` or any log file. If "Remember API key" is enabled, the key is stored via Windows Credential Manager (protected by Windows DPAPI encryption). API keys are never displayed in the UI log panel, and all error messages are sanitized to redact key content.
 
 ## Privacy & Data Handling
 
 **Audio**: Recorded audio is processed in memory and discarded after transcription. The Canary engine writes temporary WAV files to `%TEMP%\cv2t\` during processing; these are deleted immediately after use.
 
-**Transcriptions**: Transcribed text is displayed in the UI and optionally copied to the clipboard. Transcription content is **not** written to log files — only character counts are logged.
+**Transcriptions**: Transcribed text is displayed in the UI and optionally copied to the clipboard. Transcription content is **not** written to log files — only character counts are logged. When **Professional Mode** is enabled, transcribed text is sent to the OpenAI API for cleanup (see Network below).
 
 **Logs**: Application logs are stored at `C:\Program Files\CV2T\logs\` as rotating plaintext files (~6 MB max). Logs contain diagnostic information (engine status, GPU metrics, error traces) but no speech content. Logs are cleared on exit by default (`clear_logs_on_exit: true`).
 
-**Network**: CV2T makes network requests **only** to download models from HuggingFace Hub (public repos, no authentication required). No telemetry, analytics, or usage data is collected or transmitted.
+**Network**: CV2T makes network requests **only** in two scenarios:
+
+1. **Model downloads** — to HuggingFace Hub (public repos, no authentication required) when downloading speech engine models.
+2. **Professional Mode** (when enabled) — transcribed text is sent to the OpenAI API (`api.openai.com`) for tone, grammar, and punctuation cleanup. This requires a user-provided API key and is **opt-in only** — disabled by default. No audio data is sent; only the transcribed text string is transmitted.
+
+No telemetry, analytics, or usage data is collected or transmitted.
 
 **Keyboard hooks**: Only the configured hotkey combinations are monitored — general keystrokes are not captured or logged.

@@ -11,12 +11,21 @@ log = logging.getLogger(__name__)
 
 ENGINES: Dict[str, Type] = {}
 
-# Canary — requires NeMo + torch
+# Canary — requires NeMo + torch (direct import for source installs)
 try:
     from .canary import CanaryEngine
     ENGINES["canary"] = CanaryEngine
 except ImportError:
-    log.debug("Canary engine unavailable (NeMo/torch not installed)")
+    # Canary subprocess bridge — for binary installs with canary-env
+    try:
+        from .canary_bridge import CanaryBridgeEngine, canary_env_available
+        if canary_env_available():
+            ENGINES["canary"] = CanaryBridgeEngine
+            log.debug("Canary engine available via subprocess bridge (canary-env)")
+        else:
+            log.debug("Canary engine unavailable (NeMo/torch not installed, no canary-env)")
+    except ImportError:
+        log.debug("Canary engine unavailable (NeMo/torch not installed)")
 
 # Whisper — requires faster-whisper (CTranslate2)
 try:

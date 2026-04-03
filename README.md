@@ -28,6 +28,7 @@ The installer will:
 ## Features
 
 - **Two engine options**: NVIDIA Canary Qwen 2.5B (NeMo) or Faster-Whisper (CTranslate2)
+- **Professional Mode**: Optional AI-powered text cleanup — fixes tone, grammar, and punctuation via OpenAI API
 - **Global hotkeys**: Start/stop recording from any application
 - **Auto-paste**: Transcribed text goes directly to your active window
 - **GPU-accelerated**: Both engines leverage NVIDIA CUDA
@@ -64,8 +65,16 @@ uv run cv2t
 | `silence_threshold` | `0.0015`                           | RMS threshold for silence detection                      |
 | `auto_copy`         | `true`                             | Auto-copy transcription to clipboard                     |
 | `auto_paste`        | `true`                             | Auto-paste via Ctrl+V after transcription                |
+| `professional_mode` | `false`                            | Enable AI text cleanup (requires OpenAI API key)         |
+| `pro_fix_tone`      | `true`                             | Rewrite unprofessional or emotional language              |
+| `pro_fix_grammar`   | `true`                             | Fix grammar errors                                       |
+| `pro_fix_punctuation`| `true`                            | Fix punctuation and capitalization                        |
+| `pro_model`         | `gpt-5.4-mini`                     | OpenAI model for text cleanup                            |
+| `store_api_key`     | `false`                            | Persist API key in Windows Credential Manager             |
 
 Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
+
+> **Note:** The OpenAI API key is **never** stored in `settings.json`. It is held in memory only, unless you enable "Remember API key", which saves it securely via Windows Credential Manager (DPAPI).
 
 ## Hotkeys
 
@@ -77,23 +86,47 @@ Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
 
 Hotkeys are configurable in Settings.
 
+## Professional Mode
+
+Optional AI-powered post-processing that cleans up your dictated text before it reaches the clipboard. Enable it in **Settings → Professional Mode**.
+
+**What it does:**
+- **Fix tone** — rewrites emotional, aggressive, or unprofessional language while preserving meaning
+- **Fix grammar** — corrects grammar errors
+- **Fix punctuation** — adds proper punctuation and capitalization
+
+Each option can be toggled independently. When enabled, the transcription history shows both the original and cleaned text.
+
+**Requirements:** An OpenAI API key. Enter it in Settings — the key is held in memory only by default and is **never** written to `settings.json` or any log file. Optionally check "Remember API key" to store it securely via Windows Credential Manager.
+
+**Example:**
+
+| Input (dictated) | Output (cleaned, all options on) |
+|---|---|
+| *"I am having a horrible day at work and I am angry and frustrated at you"* | *"I am having a challenging day at work and would like to discuss some concerns with you."* |
+
 ## Architecture
 
 ```
-┌───────────────────────┐
-│      CV2T GUI         │
-│  (PySide6 / Qt)       │
-├───────────────────────┤
-│   Engine Abstraction  │
-│   ┌───────┐ ┌───────┐ │
-│   │Canary │ │Whisper│ │
-│   │(NeMo) │ │(CT2)  │ │
-│   └───┬───┘ └──┬────┘ │
-│       │        │      │
-│       ▼        ▼      │
-│     NVIDIA GPU        │
-│     (CUDA)            │
-└───────────────────────┘
+┌───────────────────────────────────┐
+│          CV2T GUI                 │
+│       (PySide6 / Qt)              │
+├───────────────────────────────────┤
+│   Engine Abstraction              │
+│   ┌───────┐ ┌───────┐            │
+│   │Canary │ │Whisper│            │
+│   │(NeMo) │ │(CT2)  │            │
+│   └───┬───┘ └──┬────┘            │
+│       │        │                  │
+│       ▼        ▼                  │
+│     NVIDIA GPU (CUDA)             │
+├───────────────────────────────────┤
+│   Professional Mode (optional)    │
+│   ┌─────────────────────────┐     │
+│   │ TextProcessor → OpenAI  │     │
+│   │ (tone, grammar, punct.) │     │
+│   └─────────────────────────┘     │
+└───────────────────────────────────┘
 ```
 
 ## Model Comparison
@@ -115,6 +148,7 @@ Hotkeys are configurable in Settings.
 | CUDA Toolkit         | 12.x                                | 12.x                                       |
 | cuDNN                | Not required                        | 9.x (via torch)                            |
 | CTranslate2          | 4.5.x                               | —                                          |
+| ONNX Runtime         | 1.17+ (Silero VAD)                  | —                                          |
 | torch                | NOT required                        | 2.1+ (via NeMo)                            |
 | NeMo                 | —                                   | 2.0+                                       |
 

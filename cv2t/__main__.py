@@ -21,16 +21,7 @@ import os
 import sys
 
 
-_WHISPER_MODEL_ID = "large-v3-turbo"
-_WHISPER_REPO_ID = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-_WHISPER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
-_WHISPER_ALLOW_PATTERNS = [
-    "config.json",
-    "preprocessor_config.json",
-    "model.bin",
-    "tokenizer.json",
-    "vocabulary.*",
-]
+# Whisper model constants are now centralised in cv2t.model_downloader.
 
 # ── Stdout/stderr safety (needed for PyInstaller --noconsole builds) ─────────
 if sys.stdout is None:
@@ -75,7 +66,7 @@ def _ensure_single_instance() -> bool:
 # ── Logging ──────────────────────────────────────────────────────────────────
 
 def _setup_logging() -> None:
-    from .config import DEFAULT_LOG_DIR
+    from cv2t.config import DEFAULT_LOG_DIR
 
     log_dir = str(DEFAULT_LOG_DIR)
     os.makedirs(log_dir, exist_ok=True)
@@ -132,7 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_download_model(args: argparse.Namespace) -> int:
     """Handle the download-model subcommand."""
-    from .config import DEFAULT_MODELS_DIR
+    from cv2t.config import DEFAULT_MODELS_DIR
 
     target_dir = args.target_dir or DEFAULT_MODELS_DIR
     os.makedirs(target_dir, exist_ok=True)
@@ -148,95 +139,35 @@ def _cmd_download_model(args: argparse.Namespace) -> int:
     return 1
 
 
-def _is_whisper_model(model_dir: str) -> bool:
-    """Return True if config.json in *model_dir* describes a Whisper model."""
-    import json as _json
-    cfg_path = os.path.join(model_dir, "config.json")
-    if not os.path.isfile(cfg_path):
-        return False
-    try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = _json.load(f)
-        archs = cfg.get("architectures", [])
-        if archs and not any("whisper" in a.lower() for a in archs):
-            return False
-        model_type = cfg.get("model_type", "")
-        if model_type and model_type.lower() not in ("whisper", ""):
-            return False
-        return True
-    except (ValueError, OSError):
-        return False
-
-
-def _whisper_model_ready(target_dir: str) -> bool:
-    """Return True if the whisper model files already exist locally."""
-    return (
-        all(os.path.isfile(os.path.join(target_dir, f)) for f in _WHISPER_REQUIRED_FILES)
-        and _is_whisper_model(target_dir)
-    )
-
-
-def _print_whisper_runtime_diagnostics() -> None:
-    """Print runtime details for the active faster-whisper installation."""
-    try:
-        import faster_whisper
-        import faster_whisper.utils as faster_whisper_utils
-
-        models = getattr(faster_whisper_utils, "_MODELS", None)
-        resolved_repo = None
-        if isinstance(models, dict):
-            resolved_repo = models.get(_WHISPER_MODEL_ID)
-
-        print(f"faster_whisper.__file__ = {getattr(faster_whisper, '__file__', '<unknown>')}")
-        print(
-            "faster_whisper.utils.__file__ = "
-            f"{getattr(faster_whisper_utils, '__file__', '<unknown>')}"
-        )
-        print(f"_MODELS['{_WHISPER_MODEL_ID}'] = {resolved_repo!r}")
-    except Exception as exc:
-        print(f"WARNING: Unable to inspect faster-whisper runtime diagnostics: {exc}")
-
-
 def _download_whisper(target_dir: str) -> int:
-    if _whisper_model_ready(target_dir):
-        print(f"Whisper model already present in {target_dir} — skipping download.")
-        return 0
-    _print_whisper_runtime_diagnostics()
-    return _download_model("Whisper", _WHISPER_REPO_ID, target_dir,
-                           allow_patterns=_WHISPER_ALLOW_PATTERNS)
+    """Download Whisper model via stdlib urllib (no huggingface_hub needed)."""
+    from cv2t.model_downloader import download_whisper_model
+    return download_whisper_model(target_dir)
 
 
 def _download_canary(target_dir: str) -> int:
-    """Download Canary NeMo SALM model via huggingface_hub."""
-    return _download_model("Canary", "nvidia/canary-qwen-2.5b", target_dir)
-
-
-def _download_model(
-    engine_label: str,
-    repo_id: str,
-    target_dir: str,
-    *,
-    allow_patterns: list | None = None,
-) -> int:
-    """Generic HuggingFace model download with standard error handling."""
-    print(f"Downloading {engine_label} model from {repo_id} to {target_dir}...")
+    """Download Canary NeMo SALM model via huggingface_hub (if available)."""
+    import importlib
     try:
-        from huggingface_hub import snapshot_download
-
-        kwargs: dict = {
-            "repo_id": repo_id,
-            "local_dir": target_dir,
-            "local_files_only": False,
-        }
-        if allow_patterns:
-            kwargs["allow_patterns"] = allow_patterns
-        snapshot_download(**kwargs)
-        print("Download complete.")
+        hf_hub = importlib.import_module("huggingface_hub")
+    except ImportError:
+        print("ERROR: Canary model download requires huggingface-hub.")
+        print("Install Canary via Settings \u2192 Install Canary Engine,")
+        print("or run: pip install huggingface-hub")
+        return 1
+    print(f"Downloading Canary model from nvidia/canary-qwen-2.5b to {target_dir}...")
+    try:
+        hf_hub.snapshot_download(
+            repo_id="nvidia/canary-qwen-2.5b",
+            local_dir=target_dir,
+            local_files_only=False,
+        )
+        print("Canary model download complete.")
         return 0
     except Exception as exc:
         msg = str(exc)
         if "401" in msg or "Repository Not Found" in msg:
-            print(f"ERROR: Repo '{repo_id}' not found or access denied: {exc}")
+            print(f"ERROR: Repo not found or access denied: {exc}")
         else:
             print(f"ERROR: Download failed: {exc}")
         return 1
@@ -249,7 +180,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.version:
-        from . import __version__
+        from cv2t import __version__
         print(f"CV2T {__version__}")
         return 0
 
@@ -258,7 +189,10 @@ def main() -> int:
         return _cmd_download_model(args)
 
     # Default: launch GUI
-    faulthandler.enable()
+    try:
+        faulthandler.enable()
+    except io.UnsupportedOperation:
+        pass  # stderr has no fileno() in PyInstaller --noconsole builds
 
     if not _ensure_single_instance():
         try:
@@ -272,8 +206,8 @@ def main() -> int:
     _setup_logging()
 
     from PySide6.QtWidgets import QApplication
-    from .config import Settings
-    from .main_window import MainWindow
+    from cv2t.config import Settings
+    from cv2t.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("CV2T")
@@ -286,7 +220,7 @@ def main() -> int:
     # Skip when restarting after an engine change in settings (the user
     # already made their choice and it is persisted).
     if not args.skip_engine_prompt:
-        from .engine import get_available_engines
+        from cv2t.engine import get_available_engines
         available = get_available_engines(settings.model_path)
         if len(available) > 1:
             chosen = _ask_engine_selection(available, settings.engine)

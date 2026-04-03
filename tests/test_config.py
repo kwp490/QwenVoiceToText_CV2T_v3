@@ -54,6 +54,13 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertTrue(s.auto_copy)
         self.assertTrue(s.auto_paste)
         self.assertTrue(s.hotkeys_enabled)
+        # Professional Mode defaults
+        self.assertFalse(s.professional_mode)
+        self.assertTrue(s.pro_fix_tone)
+        self.assertTrue(s.pro_fix_grammar)
+        self.assertTrue(s.pro_fix_punctuation)
+        self.assertEqual(s.pro_model, "gpt-5.4-mini")
+        self.assertFalse(s.store_api_key)
 
     def test_load_missing_file_returns_defaults(self):
         loaded = Settings.load(Path("/nonexistent/path/settings.json"))
@@ -65,6 +72,49 @@ class SettingsConfigTests(unittest.TestCase):
             config_path.write_text("not valid json {{{", encoding="utf-8")
             loaded = Settings.load(config_path)
             self.assertEqual(loaded.engine, "whisper")
+
+    def test_professional_mode_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "settings.json"
+
+            settings = Settings(
+                professional_mode=True,
+                pro_fix_tone=False,
+                pro_fix_grammar=True,
+                pro_fix_punctuation=False,
+                pro_model="gpt-5.4-nano",
+                store_api_key=True,
+            )
+            settings.save(config_path)
+            loaded = Settings.load(config_path)
+
+            self.assertTrue(loaded.professional_mode)
+            self.assertFalse(loaded.pro_fix_tone)
+            self.assertTrue(loaded.pro_fix_grammar)
+            self.assertFalse(loaded.pro_fix_punctuation)
+            self.assertEqual(loaded.pro_model, "gpt-5.4-nano")
+            self.assertTrue(loaded.store_api_key)
+
+    def test_api_key_never_in_settings_json(self):
+        """The actual API key value must NEVER be serialised into settings.json."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "settings.json"
+            settings = Settings(professional_mode=True, store_api_key=True)
+            settings.save(config_path)
+            raw = config_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            # store_api_key (bool preference) is allowed, but there must be
+            # no field that could hold an actual API key string value.
+            self.assertNotIn("openai_api_key", data)
+            self.assertNotIn("api_key", data)        # no bare 'api_key' field
+            self.assertNotIn("openai", raw.lower().replace("store_api_key", ""))
+            # Verify no string value looks like an API key
+            for v in data.values():
+                if isinstance(v, str):
+                    self.assertFalse(
+                        v.startswith("sk-"),
+                        "A value resembling an API key was found in settings JSON",
+                    )
 
 
 if __name__ == "__main__":

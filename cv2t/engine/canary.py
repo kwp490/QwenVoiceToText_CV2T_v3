@@ -229,7 +229,7 @@ class CanaryEngine(SpeechEngine):
             except OSError:
                 pass
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+    def transcribe(self, audio: np.ndarray, sample_rate: int, language: str = "en") -> str:
         """Resample then delegate to the dedicated inference thread."""
         # Base-class guard + resampling on the calling thread (cheap),
         # then heavy inference on the dedicated CUDA thread.
@@ -238,9 +238,9 @@ class CanaryEngine(SpeechEngine):
         audio_16k = ensure_16khz(audio, sample_rate)
         if len(audio_16k) == 0:
             return ""
-        return self._run_on_inf_thread(self._transcribe_impl, audio_16k)
+        return self._run_on_inf_thread(self._transcribe_impl, audio_16k, language)
 
-    def _transcribe_impl(self, audio_16k: np.ndarray) -> str:
+    def _transcribe_impl(self, audio_16k: np.ndarray, language: str = "en") -> str:
         """Transcribe 16 kHz audio with mandatory chunking (inference thread)."""
         import torch
 

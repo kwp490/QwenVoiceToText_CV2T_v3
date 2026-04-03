@@ -40,6 +40,7 @@ import numpy as np
 from .audio import AudioRecorder, play_beep
 from .clipboard import set_clipboard_text, simulate_paste
 from ._constants import (
+    COLOR_DIMMED,
     COLOR_ERROR,
     COLOR_IDLE,
     COLOR_INFO,
@@ -61,6 +62,7 @@ from .config import DEFAULT_LOG_DIR, Settings
 from .engine import ENGINES
 from .hotkeys import HotkeyManager
 from ._resource_monitor import ResourceMonitor
+from .text_processor import TextProcessor, load_api_key_from_keyring
 from .workers import Worker
 
 # Engine families that cannot coexist in a single process due to
@@ -122,6 +124,7 @@ class _HistoryEntry(QWidget):
         text: str,
         success: bool,
         parent: Optional[QWidget] = None,
+        original_text: Optional[str] = None,
     ):
         super().__init__(parent)
         self._text = text
@@ -134,11 +137,35 @@ class _HistoryEntry(QWidget):
         status_label = QLabel(icon)
         status_label.setFixedWidth(22)
 
-        display = text if len(text) <= 120 else text[:117] + "…"
-        text_label = QLabel(display)
-        text_label.setWordWrap(True)
-        text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Build text column — one or two labels depending on professional mode
+        if original_text is not None:
+            text_col = QVBoxLayout()
+            text_col.setContentsMargins(0, 0, 0, 0)
+            text_col.setSpacing(1)
+
+            orig_display = original_text if len(original_text) <= 120 else original_text[:117] + "…"
+            orig_label = QLabel(f'<span style="color:{COLOR_DIMMED}">Original: {orig_display}</span>')
+            orig_label.setWordWrap(True)
+            orig_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            orig_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            text_col.addWidget(orig_label)
+
+            clean_display = text if len(text) <= 120 else text[:117] + "…"
+            clean_label = QLabel(f"Cleaned: {clean_display}")
+            clean_label.setWordWrap(True)
+            clean_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            clean_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            text_col.addWidget(clean_label)
+
+            text_widget = QWidget()
+            text_widget.setLayout(text_col)
+            text_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        else:
+            display = text if len(text) <= 120 else text[:117] + "…"
+            text_widget = QLabel(display)
+            text_widget.setWordWrap(True)
+            text_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            text_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         copy_btn = QPushButton("Copy")
         copy_btn.setFixedWidth(50)
@@ -146,7 +173,7 @@ class _HistoryEntry(QWidget):
 
         row.addWidget(time_label)
         row.addWidget(status_label)
-        row.addWidget(text_label)
+        row.addWidget(text_widget)
         row.addWidget(copy_btn)
 
     def _copy(self) -> None:
@@ -202,6 +229,16 @@ class MainWindow(QMainWindow):
         self._res_monitor.metrics_error.connect(
             lambda err: log.error("Metrics poll error: %s", err)
         )
+
+        # ── Professional Mode ────────────────────────────────────────────────
+        self._api_key: str = ""
+        self._text_processor: Optional[TextProcessor] = None
+        if settings.store_api_key:
+            self._api_key = load_api_key_from_keyring()
+        if settings.professional_mode and self._api_key:
+            self._text_processor = TextProcessor(
+                api_key=self._api_key, model=settings.pro_model
+            )
 
         # ── Build UI ─────────────────────────────────────────────────────────
         self.setWindowTitle("CV2T — Voice to Text")
@@ -666,7 +703,9 @@ class MainWindow(QMainWindow):
             trimmed = np.ascontiguousarray(trimmed, dtype=np.float32)
 
             # Transcribe in-process
-            text = self._engine.transcribe(trimmed, self.settings.sample_rate)
+            text = self._engine.transcribe(
+                trimmed, self.settings.sample_rate, self.settings.language
+            )
             return text
 
         worker = Worker(_process)
@@ -684,13 +723,49 @@ class MainWindow(QMainWindow):
         if text:
             self._set_dictation_state(DictationState.SUCCESS)
             self._log_ui(f"Transcribed: {len(text)} chars")
+
+            # Professional Mode: send to OpenAI for cleanup
+            if (
+                self.settings.professional_mode
+                and self._text_processor is not None
+            ):
+                self._log_ui("Cleaning up text…")
+
+                s = self.settings
+
+                def _cleanup():
+                    return self._text_processor.process(
+                        text,
+                        fix_tone=s.pro_fix_tone,
+                        fix_grammar=s.pro_fix_grammar,
+                        fix_punctuation=s.pro_fix_punctuation,
+                    )
+
+                worker = Worker(_cleanup)
+                worker.signals.result.connect(
+                    lambda cleaned, _ts=ts, _orig=text: self._on_professional_result(
+                        _ts, _orig, str(cleaned).strip()
+                    )
+                )
+                worker.signals.error.connect(
+                    lambda err, _ts=ts, _orig=text: self._on_professional_error(
+                        _ts, _orig, err
+                    )
+                )
+                self._pool.start(worker)
+                return
+
             self._add_history(ts, text, success=True)
 
+            copied = True
             if self._chk_auto_copy.isChecked():
-                set_clipboard_text(text)  # MAIN THREAD — safe
-                self._log_ui("Copied to clipboard")
+                copied = set_clipboard_text(text)  # MAIN THREAD — safe
+                if copied:
+                    self._log_ui("Copied to clipboard")
+                else:
+                    self._log_ui("Failed to copy to clipboard", error=True)
 
-            if self._chk_auto_paste.isChecked():
+            if copied and self._chk_auto_paste.isChecked():
                 # Run paste in a thread to avoid blocking UI during modifier wait
                 def _paste():
                     simulate_paste(wait_for_modifiers=self._chk_hotkeys.isChecked())
@@ -700,6 +775,68 @@ class MainWindow(QMainWindow):
             self._log_ui("Transcription returned empty text")
             self._add_history(ts, "(empty)", success=True)
             self._set_dictation_state(DictationState.SUCCESS)
+
+        QTimer.singleShot(
+            STATE_RESET_IDLE_MS,
+            lambda: self._set_dictation_state(DictationState.IDLE)
+            if self._dictation_state in (DictationState.SUCCESS, DictationState.ERROR)
+            else None,
+        )
+
+    @Slot()
+    def _on_professional_result(
+        self, ts: str, original: str, cleaned: str
+    ) -> None:
+        """Handle the cleaned text from Professional Mode."""
+        if cleaned and cleaned != original:
+            self._log_ui(f"Professional cleanup: {len(original)} → {len(cleaned)} chars")
+            self._add_history(ts, cleaned, success=True, original_text=original)
+            output = cleaned
+        else:
+            self._log_ui("Professional cleanup returned unchanged text")
+            self._add_history(ts, original, success=True)
+            output = original
+
+        copied = True
+        if self._chk_auto_copy.isChecked():
+            copied = set_clipboard_text(output)
+            if copied:
+                self._log_ui("Copied to clipboard")
+            else:
+                self._log_ui("Failed to copy to clipboard", error=True)
+
+        if copied and self._chk_auto_paste.isChecked():
+            def _paste():
+                simulate_paste(wait_for_modifiers=self._chk_hotkeys.isChecked())
+            w = Worker(_paste)
+            self._pool.start(w)
+
+        QTimer.singleShot(
+            STATE_RESET_IDLE_MS,
+            lambda: self._set_dictation_state(DictationState.IDLE)
+            if self._dictation_state in (DictationState.SUCCESS, DictationState.ERROR)
+            else None,
+        )
+
+    @Slot()
+    def _on_professional_error(self, ts: str, original: str, err: str) -> None:
+        """Professional Mode cleanup failed — fall back to raw text."""
+        self._log_ui(f"Professional cleanup failed: {err}", error=True)
+        self._add_history(ts, original, success=True)
+
+        copied = True
+        if self._chk_auto_copy.isChecked():
+            copied = set_clipboard_text(original)
+            if copied:
+                self._log_ui("Copied original text to clipboard (cleanup failed)")
+            else:
+                self._log_ui("Failed to copy to clipboard", error=True)
+
+        if copied and self._chk_auto_paste.isChecked():
+            def _paste():
+                simulate_paste(wait_for_modifiers=self._chk_hotkeys.isChecked())
+            w = Worker(_paste)
+            self._pool.start(w)
 
         QTimer.singleShot(
             STATE_RESET_IDLE_MS,
@@ -726,8 +863,17 @@ class MainWindow(QMainWindow):
     # HISTORY
     # ═════════════════════════════════════════════════════════════════════════
 
-    def _add_history(self, timestamp: str, text: str, success: bool) -> None:
-        entry = _HistoryEntry(timestamp, text, success, parent=self._history_widget)
+    def _add_history(
+        self,
+        timestamp: str,
+        text: str,
+        success: bool,
+        original_text: Optional[str] = None,
+    ) -> None:
+        entry = _HistoryEntry(
+            timestamp, text, success, parent=self._history_widget,
+            original_text=original_text,
+        )
         count = self._history_layout.count()
         self._history_layout.insertWidget(max(0, count - 1), entry)
 
@@ -752,8 +898,10 @@ class MainWindow(QMainWindow):
         """Copy all visible log text to the clipboard."""
         text = self._log_text.toPlainText()
         if text:
-            set_clipboard_text(text)
-            self._log_ui("Logs copied to clipboard")
+            if set_clipboard_text(text):
+                self._log_ui("Logs copied to clipboard")
+            else:
+                self._log_ui("Failed to copy logs to clipboard", error=True)
         else:
             self._log_ui("No log text to copy")
 
@@ -779,8 +927,9 @@ class MainWindow(QMainWindow):
         old_model_path = self.settings.model_path
         old_device = self.settings.device
 
-        dlg = SettingsDialog(self.settings, parent=self)
+        dlg = SettingsDialog(self.settings, parent=self, api_key=self._api_key)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
+            self._api_key = dlg.api_key
             self._apply_settings()
 
             # If engine, model path, or device changed, prompt to reload
@@ -851,12 +1000,20 @@ class MainWindow(QMainWindow):
 
         release_single_instance_mutex()
 
-        # Re-launch via the same executable, skipping the engine prompt
-        # since the user already chose the engine in settings.
-        subprocess.Popen(
-            [sys.executable, "-m", "cv2t", "--skip-engine-prompt"],
-            cwd=os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"),
-        )
+        # Re-launch, skipping the engine prompt since the user already
+        # chose the engine in settings.
+        if getattr(sys, "frozen", False):
+            # PyInstaller frozen build — sys.executable is the .exe itself
+            subprocess.Popen(
+                [sys.executable, "--skip-engine-prompt"],
+                cwd=os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"),
+            )
+        else:
+            # Source install — use python -m cv2t
+            subprocess.Popen(
+                [sys.executable, "-m", "cv2t", "--skip-engine-prompt"],
+                cwd=os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"),
+            )
 
         # Exit current process
         from PySide6.QtWidgets import QApplication
@@ -888,6 +1045,20 @@ class MainWindow(QMainWindow):
         self._chk_hotkeys.setChecked(s.hotkeys_enabled)
         self._chk_auto_copy.setChecked(s.auto_copy)
         self._chk_auto_paste.setChecked(s.auto_paste)
+
+        # Professional Mode
+        if s.professional_mode and self._api_key:
+            self._text_processor = TextProcessor(
+                api_key=self._api_key, model=s.pro_model
+            )
+            self._log_ui("Professional Mode enabled")
+        else:
+            self._text_processor = None
+            if s.professional_mode and not self._api_key:
+                self._log_ui(
+                    "Professional Mode enabled but no API key configured",
+                    error=True,
+                )
 
         self._log_ui("Settings applied")
 

@@ -17,7 +17,20 @@ binaries = collect_dynamic_libs('sounddevice')
 # Filter out cuDNN DLLs — CTranslate2 only needs cuBLAS for Whisper inference.
 try:
     _ct2_bins = collect_dynamic_libs('ctranslate2')
-    binaries += [(src, dst) for src, dst in _ct2_bins if 'cudnn' not in src.lower()]
+    binaries += [(src, dst) for src, dst in _ct2_bins
+                 if 'cudnn' not in src.lower()]
+except Exception:
+    pass
+
+# Collect PyAV (FFmpeg) DLLs — required by faster-whisper for audio decoding
+try:
+    binaries += collect_dynamic_libs('av')
+except Exception:
+    pass
+
+# Collect onnxruntime DLLs — required by faster-whisper's Silero VAD filter
+try:
+    binaries += collect_dynamic_libs('onnxruntime')
 except Exception:
     pass
 
@@ -27,7 +40,10 @@ except Exception:
 # saves ~900 MB of DLLs from the build.
 for _nvidia_pkg in ('nvidia.cublas', 'nvidia.cuda_runtime'):
     try:
-        binaries += collect_dynamic_libs(_nvidia_pkg)
+        _pkg_bins = collect_dynamic_libs(_nvidia_pkg)
+        # Double-check: strip any cuDNN DLLs that sneak in via transitive deps
+        binaries += [(src, dst) for src, dst in _pkg_bins
+                     if 'cudnn' not in src.lower()]
     except Exception:
         pass
 
@@ -37,6 +53,8 @@ a = Analysis(
     binaries=binaries,
     datas=[
         ('cv2t/assets', 'cv2t/assets'),
+        ('cv2t/engine/canary_worker.py', '.'),
+        ('installer/Enable-Canary.ps1', '.'),
     ],
     hiddenimports=[
         'PySide6.QtWidgets',
@@ -50,6 +68,9 @@ a = Analysis(
         'pynvml',
         'faster_whisper',
         'ctranslate2',
+        'av',
+        'tokenizers',
+        'onnxruntime',
     ],
     hookspath=[],
     hooksconfig={},
@@ -61,9 +82,6 @@ a = Analysis(
         'torchvision',
         'nemo',
         'nemo_toolkit',
-        'onnxruntime',
-        # PyAV (video codec library) — pulled transitively, not used by cv2t
-        'av',
         # GUI / image libraries not used
         'tkinter',
         'matplotlib',
@@ -79,7 +97,7 @@ a = Analysis(
 
 # ── Strip unnecessary binaries ───────────────────────────────────────────────
 # CV2T only uses QtWidgets/QtCore/QtGui. Remove Qt Quick/Qml/Pdf, the OpenGL
-# software renderer, PyAV video codec DLLs, and onnxruntime.
+# software renderer and PyAV video codec DLLs.
 import re as _re
 
 _STRIP_PATTERNS = [
@@ -87,9 +105,9 @@ _STRIP_PATTERNS = [
     _re.compile(r'Qt6Qml', _re.I),
     _re.compile(r'Qt6Pdf', _re.I),
     _re.compile(r'opengl32sw', _re.I),
-    _re.compile(r'av[\\/]', _re.I),         # PyAV Python package
-    _re.compile(r'av\.libs[\\/]', _re.I),    # PyAV native libs
-    _re.compile(r'onnxruntime', _re.I),
+    _re.compile(r'cudnn', _re.I),             # cuDNN — not needed for Whisper
+    _re.compile(r'huggingface_hub', _re.I),   # replaced by stdlib urllib
+    _re.compile(r'safetensors', _re.I),       # huggingface_hub transitive dep
 ]
 
 def _should_keep(entry):
@@ -109,7 +127,7 @@ exe = EXE(
     name='cv2t',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     console=False,
     disable_windowed_traceback=False,
@@ -120,7 +138,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=False,
+    strip=True,
     upx=True,
     upx_exclude=[],
     name='cv2t',

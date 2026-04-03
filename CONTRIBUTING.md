@@ -39,6 +39,7 @@ uv run python -c "from cv2t.engine import ENGINES; print(list(ENGINES.keys()))"
 - **Audio format**: All engine calls receive 1D float32 mono numpy arrays. Audio is resampled to 16 kHz before engine input, regardless of recording sample rate.
 - **Canary chunking**: Audio longer than 40 seconds is automatically chunked (30s windows with 2s overlap) and stitched.
 - **GPU cleanup**: `unload()` methods must explicitly `del` the model, call `gc.collect()`, and `torch.cuda.empty_cache()` (if torch is available).
+- **Professional Mode**: Text cleanup runs on a `Worker` thread via the OpenAI API (no GPU conflict, no need to pause the resource monitor). The API key is held in memory on `MainWindow._api_key` — it must **never** be logged, printed, or serialized to `settings.json`. Use `_sanitize_error()` from `text_processor.py` when handling API exceptions.
 
 ## Building the Binary
 

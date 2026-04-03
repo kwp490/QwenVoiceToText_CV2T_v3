@@ -8,6 +8,7 @@ COLOR_ERROR = "#c62828"
 COLOR_NEUTRAL = "#757575"
 COLOR_INFO = "#1565c0"
 COLOR_IDLE = "#424242"
+COLOR_DIMMED = "#9e9e9e"
 
 # ── Timer intervals (milliseconds) ──────────────────────────────────────────
 METRICS_POLL_MS = 5000

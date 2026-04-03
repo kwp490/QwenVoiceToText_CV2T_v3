@@ -49,6 +49,14 @@ class Settings:
     silence_threshold: float = 0.0015
     silence_margin_ms: int = 500
 
+    # ── Professional Mode ─────────────────────────────────────────────────────
+    professional_mode: bool = False
+    pro_fix_tone: bool = True
+    pro_fix_grammar: bool = True
+    pro_fix_punctuation: bool = True
+    pro_model: str = "gpt-5.4-mini"
+    store_api_key: bool = False
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     _VALID_ENGINES = {"whisper", "canary"}

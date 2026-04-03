@@ -13,7 +13,6 @@ import sys
 from typing import Optional
 
 import numpy as np
-from huggingface_hub import snapshot_download
 
 from .audio_utils import ensure_16khz
 from .base import SpeechEngine, _cleanup_gpu_memory
@@ -56,47 +55,15 @@ def _add_nvidia_dll_dirs() -> None:
     if added:
         log.info("Added NVIDIA DLL directories to PATH: %s", added)
 
-_WHISPER_MODEL_ID = "large-v3-turbo"
-_WHISPER_REPO_ID = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-_WHISPER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
-_WHISPER_ALLOW_PATTERNS = [
-    "config.json",
-    "preprocessor_config.json",
-    "model.bin",
-    "tokenizer.json",
-    "vocabulary.*",
-]
+from cv2t.model_downloader import (
+    WHISPER_MODEL_ID as _WHISPER_MODEL_ID,
+    WHISPER_REPO_ID as _WHISPER_REPO_ID,
+    WHISPER_REQUIRED_FILES as _WHISPER_REQUIRED_FILES,
+)
 
 
-def _is_whisper_model(model_dir: str) -> bool:
-    """Return True if config.json in *model_dir* describes a Whisper model."""
-    import json
-    cfg_path = os.path.join(model_dir, "config.json")
-    if not os.path.isfile(cfg_path):
-        return False
-    try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        # CTranslate2 Whisper configs don't have an "architectures" key;
-        # if one is present and it's not whisper, this is the wrong model.
-        archs = cfg.get("architectures", [])
-        if archs and not any("whisper" in a.lower() for a in archs):
-            return False
-        # CTranslate2 whisper models have "model_type": "whisper" or no
-        # model_type at all (older conversions).  Reject known non-whisper.
-        model_type = cfg.get("model_type", "")
-        if model_type and model_type.lower() not in ("whisper", ""):
-            return False
-        return True
-    except (json.JSONDecodeError, OSError):
-        return False
-
-
-def _whisper_model_ready(model_dir: str) -> bool:
-    return (
-        all(os.path.isfile(os.path.join(model_dir, name)) for name in _WHISPER_REQUIRED_FILES)
-        and _is_whisper_model(model_dir)
-    )
+from cv2t.model_downloader import is_whisper_model as _is_whisper_model
+from cv2t.model_downloader import whisper_model_ready as _whisper_model_ready
 
 
 def _log_runtime_diagnostics() -> None:
@@ -202,13 +169,15 @@ class WhisperEngine(SpeechEngine):
                 _WHISPER_REPO_ID,
                 model_path,
             )
+            from cv2t.model_downloader import download_whisper_model
+
             os.makedirs(whisper_subdir, exist_ok=True)
-            local_dir = snapshot_download(
-                repo_id=_WHISPER_REPO_ID,
-                local_dir=whisper_subdir,
-                local_files_only=False,
-                allow_patterns=_WHISPER_ALLOW_PATTERNS,
-            )
+            rc = download_whisper_model(whisper_subdir)
+            if rc != 0:
+                raise RuntimeError(
+                    f"Failed to download Whisper model to {whisper_subdir}"
+                )
+            local_dir = whisper_subdir
             log.info("Model downloaded to %s", local_dir)
 
         log.info(
@@ -258,7 +227,7 @@ class WhisperEngine(SpeechEngine):
 
         log.info("Whisper model loaded")
 
-    def _transcribe_impl(self, audio_16k: np.ndarray) -> str:
+    def _transcribe_impl(self, audio_16k: np.ndarray, language: str = "en") -> str:
         """Transcribe 16 kHz audio via faster-whisper."""
         # CTranslate2 requires a contiguous float32 array — numpy views/slices
         # from trim_silence can be non-contiguous and cause native crashes.
@@ -275,7 +244,7 @@ class WhisperEngine(SpeechEngine):
 
         segments, info = self._model.transcribe(
             audio_16k,
-            language="en",
+            language=language,
             beam_size=5,
             vad_filter=True,
         )
