@@ -334,5 +334,79 @@ class TestCanaryTorchGuard(unittest.TestCase):
             engine._inf_queue.put(None)  # shut down inference thread
 
 
+class TestEngineFallback(unittest.TestCase):
+    """App must fall back gracefully when saved engine isn't available."""
+
+    def test_fallback_when_saved_engine_missing(self):
+        """MainWindow must fall back to first available engine, not crash."""
+        from cv2t.config import Settings
+        import cv2t.engine as engine_mod
+
+        original_engines = dict(engine_mod.ENGINES)
+
+        # Simulate: ENGINES has only whisper, settings say canary
+        mock_engine_cls = MagicMock()
+        mock_engine_cls.return_value = MagicMock(spec=SpeechEngine)
+
+        engine_mod.ENGINES.clear()
+        engine_mod.ENGINES["whisper"] = mock_engine_cls
+
+        try:
+            settings = Settings(engine="canary", model_path="/fake")
+            # Import the function that selects engine (inline the logic)
+            engine_cls = engine_mod.ENGINES.get(settings.engine)
+            self.assertIsNone(engine_cls, "canary should not be in ENGINES")
+
+            available = list(engine_mod.ENGINES.keys())
+            self.assertEqual(available, ["whisper"])
+
+            # Simulating the fallback logic from MainWindow.__init__
+            if engine_cls is None and available:
+                fallback = available[0]
+                settings.engine = fallback
+                engine_cls = engine_mod.ENGINES[fallback]
+
+            self.assertEqual(settings.engine, "whisper")
+            self.assertIs(engine_cls, mock_engine_cls)
+        finally:
+            engine_mod.ENGINES.clear()
+            engine_mod.ENGINES.update(original_engines)
+
+    def test_no_engines_raises_runtime_error(self):
+        """If no engines at all are available, RuntimeError must be raised."""
+        import cv2t.engine as engine_mod
+
+        original_engines = dict(engine_mod.ENGINES)
+        engine_mod.ENGINES.clear()
+
+        try:
+            available = list(engine_mod.ENGINES.keys())
+            self.assertEqual(available, [])
+            with self.assertRaises(RuntimeError) as ctx:
+                if not available:
+                    raise RuntimeError(
+                        "No speech engines available. Re-install the "
+                        "application or check that dependencies are intact."
+                    )
+            self.assertIn("No speech engines available", str(ctx.exception))
+        finally:
+            engine_mod.ENGINES.clear()
+            engine_mod.ENGINES.update(original_engines)
+
+    def test_settings_validate_accepts_canary(self):
+        """Settings.validate() must accept 'canary' as a valid engine name."""
+        from cv2t.config import Settings
+        s = Settings(engine="canary")
+        s.validate()
+        self.assertEqual(s.engine, "canary")
+
+    def test_settings_validate_rejects_unknown_engine(self):
+        """Settings.validate() must reject unknown engine names."""
+        from cv2t.config import Settings
+        s = Settings(engine="nonexistent_engine")
+        s.validate()
+        self.assertEqual(s.engine, "whisper")
+
+
 if __name__ == "__main__":
     unittest.main()

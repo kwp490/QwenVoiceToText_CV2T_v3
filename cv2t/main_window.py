@@ -200,10 +200,21 @@ class MainWindow(QMainWindow):
             engine_cls = ENGINES.get(settings.engine)
             if engine_cls is None:
                 available = list(ENGINES.keys())
-                raise RuntimeError(
-                    f"Engine '{settings.engine}' not available. "
-                    f"Installed engines: {available}"
-                )
+                if available:
+                    fallback = available[0]
+                    log.warning(
+                        "Engine '%s' not available; falling back to '%s'. "
+                        "Installed engines: %s",
+                        settings.engine, fallback, available,
+                    )
+                    settings.engine = fallback
+                    settings.save()
+                    engine_cls = ENGINES[fallback]
+                else:
+                    raise RuntimeError(
+                        "No speech engines available. Re-install the "
+                        "application or check that dependencies are intact."
+                    )
             self._engine = engine_cls()
 
         # ── Audio ────────────────────────────────────────────────────────────
