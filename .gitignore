@@ -6,6 +6,10 @@ __pycache__/
 # Test cache
 .pytest_cache/
 
+# Test output dumps
+test_*.txt
+sd_diff.txt
+
 # Internal planning docs (not for release)
 plan-*.prompt.md
 
