@@ -9,6 +9,7 @@ These tests catch issues that only manifest in --noconsole PyInstaller builds:
 
 import ast
 import io
+import os
 import re
 import sys
 import unittest
@@ -327,6 +328,211 @@ class TestTransitiveDependenciesInSpec(unittest.TestCase):
             f"Silero VAD model not found at {vad_model} — "
             "faster-whisper VAD will fail at runtime",
         )
+
+
+class TestBundledDataFilesInDist(unittest.TestCase):
+    """Data files listed in cv2t.spec datas must land in the build output.
+
+    PyInstaller 6+ places data files in _internal/ (not beside the exe).
+    Both the spec and the Python lookup code must agree on this layout.
+    """
+
+    _DIST_DIR = _REPO_ROOT / "dist" / "cv2t"
+    _INTERNAL_DIR = _DIST_DIR / "_internal"
+
+    @unittest.skipUnless(
+        (_REPO_ROOT / "dist" / "cv2t").is_dir(),
+        "dist/cv2t/ not found — run pyinstaller cv2t.spec first",
+    )
+    def test_enable_canary_in_build(self):
+        """Enable-Canary.ps1 must exist in the build output.
+
+        The settings dialog searches app_dir (exe directory) first, then
+        sys._MEIPASS (_internal/). At least one must contain the file.
+        """
+        found = (
+            (self._DIST_DIR / "Enable-Canary.ps1").is_file()
+            or (self._INTERNAL_DIR / "Enable-Canary.ps1").is_file()
+        )
+        self.assertTrue(
+            found,
+            "Enable-Canary.ps1 missing from dist/cv2t/ AND "
+            "dist/cv2t/_internal/. Check cv2t.spec datas list.",
+        )
+
+    @unittest.skipUnless(
+        (_REPO_ROOT / "dist" / "cv2t").is_dir(),
+        "dist/cv2t/ not found — run pyinstaller cv2t.spec first",
+    )
+    def test_canary_worker_in_build(self):
+        """canary_worker.py must exist in the build output."""
+        found = (
+            (self._DIST_DIR / "canary_worker.py").is_file()
+            or (self._INTERNAL_DIR / "canary_worker.py").is_file()
+        )
+        self.assertTrue(
+            found,
+            "canary_worker.py missing from build output. "
+            "Check cv2t.spec datas list.",
+        )
+
+
+class TestSettingsDialogScriptDiscovery(unittest.TestCase):
+    """_on_install_canary must find Enable-Canary.ps1 in all layouts.
+
+    Layouts:
+    - Dev/source:  repo_root/installer/Enable-Canary.ps1
+    - Frozen (PyInstaller 6+): _internal/Enable-Canary.ps1  (sys._MEIPASS)
+    - Frozen (legacy):  app_dir/Enable-Canary.ps1
+    """
+
+    def _find_script(self, *, frozen: bool, app_dir: str,
+                     meipass: str | None = None) -> str | None:
+        """Replicate the lookup logic from _on_install_canary."""
+        if frozen:
+            data_dir = meipass if meipass else app_dir
+        else:
+            data_dir = app_dir
+
+        path = os.path.join(app_dir, "Enable-Canary.ps1")
+        if os.path.isfile(path):
+            return path
+        path = os.path.join(data_dir, "Enable-Canary.ps1")
+        if os.path.isfile(path):
+            return path
+        path = os.path.join(app_dir, "installer", "Enable-Canary.ps1")
+        if os.path.isfile(path):
+            return path
+        return None
+
+    def test_dev_layout(self):
+        """In dev mode, the script is found via installer/ subdirectory."""
+        result = self._find_script(frozen=False, app_dir=str(_REPO_ROOT))
+        self.assertIsNotNone(result, "Script not found in dev layout")
+        self.assertTrue(result.endswith("Enable-Canary.ps1"))
+
+    def test_frozen_pyinstaller6_layout(self):
+        """Simulates PyInstaller 6+ where data files are in _internal/."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            internal = os.path.join(tmpdir, "_internal")
+            os.makedirs(internal)
+            script = os.path.join(internal, "Enable-Canary.ps1")
+            Path(script).write_text("# stub", encoding="utf-8")
+
+            result = self._find_script(
+                frozen=True, app_dir=tmpdir, meipass=internal,
+            )
+            self.assertIsNotNone(
+                result,
+                "Script not found with _internal/ layout (PyInstaller 6+)",
+            )
+            self.assertEqual(result, script)
+
+    def test_frozen_legacy_layout(self):
+        """Simulates pre-PyInstaller-6 where data files sit beside the exe."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = os.path.join(tmpdir, "Enable-Canary.ps1")
+            Path(script).write_text("# stub", encoding="utf-8")
+
+            result = self._find_script(frozen=True, app_dir=tmpdir)
+            self.assertIsNotNone(
+                result,
+                "Script not found with legacy (beside-exe) layout",
+            )
+            self.assertEqual(result, script)
+
+    def test_missing_everywhere_returns_none(self):
+        """When the script doesn't exist anywhere, None is returned."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._find_script(frozen=True, app_dir=tmpdir)
+            self.assertIsNone(result)
+
+
+class TestCanaryLaunchCommandQuoting(unittest.TestCase):
+    """The PowerShell command built by _on_install_canary must quote paths.
+
+    Paths like 'C:\\Program Files\\CV2T\\...' contain spaces. The command
+    passes through two PowerShell layers (outer → Start-Process → inner),
+    so each path token must be individually quoted to survive both stages.
+    """
+
+    @staticmethod
+    def _build_commands(script_path: str, app_dir: str) -> tuple[str, str]:
+        """Replicate the quoting logic from _on_install_canary.
+
+        Returns (inner_cmd, outer_cmd).
+        """
+        esc_script = script_path.replace("'", "''")
+        esc_app = app_dir.replace("'", "''")
+        inner_cmd = (
+            "Set-ExecutionPolicy Bypass -Scope Process -Force; "
+            f"& '{esc_script}' -AppDir '{esc_app}'"
+        )
+        outer_cmd = (
+            "Start-Process powershell.exe "
+            "-ArgumentList @("
+            "'-NoExit',"
+            "'-Command',"
+            f"'{inner_cmd.replace(chr(39), chr(39)*2)}'"
+            ") -Verb RunAs"
+        )
+        return inner_cmd, outer_cmd
+
+    def test_paths_with_spaces_are_quoted(self):
+        """Paths with spaces must be individually single-quoted."""
+        inner, _ = self._build_commands(
+            r"C:\Program Files\CV2T\_internal\Enable-Canary.ps1",
+            r"C:\Program Files\CV2T",
+        )
+        self.assertIn(
+            "& 'C:\\Program Files\\CV2T\\_internal\\Enable-Canary.ps1'",
+            inner,
+        )
+        self.assertIn("-AppDir 'C:\\Program Files\\CV2T'", inner)
+
+    def test_outer_cmd_doubles_single_quotes(self):
+        """The outer command must double single-quotes for Start-Process."""
+        _, outer = self._build_commands(
+            r"C:\Program Files\CV2T\_internal\Enable-Canary.ps1",
+            r"C:\Program Files\CV2T",
+        )
+        # Inner single quotes become '' in the outer layer
+        self.assertIn("''C:\\Program Files\\CV2T\\_internal\\Enable-Canary.ps1''", outer)
+        self.assertIn("-AppDir ''C:\\Program Files\\CV2T''", outer)
+
+    def test_paths_without_spaces_still_quoted(self):
+        """Even paths without spaces must be quoted for consistency."""
+        inner, _ = self._build_commands(
+            r"C:\CV2T\_internal\Enable-Canary.ps1",
+            r"C:\CV2T",
+        )
+        self.assertIn("& 'C:\\CV2T\\_internal\\Enable-Canary.ps1'", inner)
+        self.assertIn("-AppDir 'C:\\CV2T'", inner)
+
+    def test_source_uses_list_argv(self):
+        """subprocess.Popen must use a list, not a shell string."""
+        src = (_CV2T_PKG / "settings_dialog.py").read_text(encoding="utf-8")
+        # Must NOT have shell=True
+        self.assertNotIn(
+            "shell=True",
+            src,
+            "subprocess calls must use list argv, not shell=True",
+        )
+
+    def test_source_quotes_esc_script_in_fstring(self):
+        """The f-string building inner_cmd must wrap {esc_script} in quotes.
+
+        A previous bug had f'...'' {var}''...' where '' ended the f-string
+        literal, causing {var} to be treated as a Python expression outside
+        the string rather than an f-string interpolation.
+        """
+        src = (_CV2T_PKG / "settings_dialog.py").read_text(encoding="utf-8")
+        # Must contain the proper pattern: f"& '{esc_script}' -AppDir ..."
+        self.assertIn("'{esc_script}'", src)
+        self.assertIn("'{esc_app}'", src)
 
 
 if __name__ == "__main__":

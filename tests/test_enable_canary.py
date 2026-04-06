@@ -64,6 +64,165 @@ class TestEnableCanaryScript(unittest.TestCase):
         self.assertIn("pyproject.toml", content)
         self.assertIn("nemo_toolkit", content)
 
+    def test_script_accepts_appdir_parameter(self):
+        """Enable-Canary.ps1 must accept -AppDir to override directory detection.
+
+        PyInstaller 6+ places bundled data files in _internal/, so the
+        script's own path is no longer the app root. The settings dialog
+        passes -AppDir to provide the correct install directory.
+        """
+        content = (_INSTALLER_DIR / "Enable-Canary.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            "$AppDir",
+            content,
+            "Script must use $AppDir variable",
+        )
+        self.assertRegex(
+            content,
+            r"param\s*\(",
+            "Script must have a param() block to accept -AppDir",
+        )
+        # Extract the full param() block (may span multiple lines)
+        param_match = re.search(r"param\s*\((.*?)\)", content, re.DOTALL)
+        self.assertIsNotNone(param_match, "Could not find param() block")
+        self.assertIn(
+            "AppDir",
+            param_match.group(1),
+            "param() block must include [string]$AppDir parameter",
+        )
+
+    def test_script_handles_internal_directory(self):
+        """Script must detect _internal/ parent and adjust AppDir accordingly."""
+        content = (_INSTALLER_DIR / "Enable-Canary.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            "_internal",
+            content,
+            "Script must handle being located inside _internal/ directory",
+        )
+
+    def test_script_handles_installer_directory(self):
+        """Script must detect installer/ parent and adjust AppDir accordingly.
+
+        Regression: running Enable-Canary.ps1 from the installer/ directory
+        resolved $AppDir to installer/ itself, placing canary-env and models
+        under installer/ instead of the app root.
+        """
+        content = (_INSTALLER_DIR / "Enable-Canary.ps1").read_text(encoding="utf-8")
+        # The path adjustment must handle both _internal and installer
+        self.assertIn(
+            "installer",
+            content,
+            "Script must handle being located inside installer/ directory",
+        )
+        # Verify the pattern matches both directories in the same condition
+        self.assertRegex(
+            content,
+            r"'_internal'.*'installer'|'installer'.*'_internal'",
+            "Script must check for both _internal/ and installer/ directories",
+        )
+
+    def test_canary_env_deps_match_worker_imports(self):
+        """Every package imported by canary_worker.py must appear in the
+        canary-env pyproject.toml embedded in Enable-Canary.ps1.
+
+        Regression: onnxruntime was imported by NeMo at runtime but was
+        not listed in the canary-env dependencies, causing ImportError.
+        """
+        import ast
+        import re
+
+        # ── Collect top-level package names from canary_worker.py ──
+        worker_path = _REPO_ROOT / "cv2t" / "engine" / "canary_worker.py"
+        source = worker_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        worker_imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    worker_imports.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                worker_imports.add(node.module.split(".")[0])
+
+        # Remove stdlib modules (not installable)
+        stdlib = {
+            "__future__", "gc", "json", "logging", "os", "sys",
+            "tempfile", "importlib", "types", "warnings",
+        }
+        worker_imports -= stdlib
+
+        # ── Extract dependency list from Enable-Canary.ps1 ──
+        script = (_INSTALLER_DIR / "Enable-Canary.ps1").read_text(encoding="utf-8")
+        # Find the dependencies array in the embedded pyproject.toml
+        # Use a bracket-counting approach since the deps contain [] (e.g. nemo_toolkit[asr])
+        dep_start = script.find('dependencies = [')
+        self.assertNotEqual(dep_start, -1, "Could not find dependencies in script")
+        bracket_start = script.index('[', dep_start)
+        depth = 0
+        bracket_end = bracket_start
+        for i, ch in enumerate(script[bracket_start:], start=bracket_start):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    bracket_end = i
+                    break
+        dep_block = script[bracket_start + 1:bracket_end]
+
+        # Normalize: map pip package names to importable names
+        pip_to_import = {
+            "nemo_toolkit": "nemo",
+            "nemo-toolkit": "nemo",
+            "huggingface-hub": "huggingface_hub",
+            "huggingface_hub": "huggingface_hub",
+            "soundfile": "soundfile",
+            "onnxruntime": "onnxruntime",
+        }
+        declared_imports = set()
+        for dep_line in dep_block.split(","):
+            dep_line = dep_line.strip().strip('"').strip("'")
+            # Extract package name (before any version spec or extras)
+            pkg = re.split(r'[>=<~!\[\]]+', dep_line)[0].strip()
+            if pkg:
+                import_name = pip_to_import.get(pkg, pkg)
+                declared_imports.add(import_name)
+
+        # ── Check coverage ──
+        # These are packages that canary_worker imports (directly or that
+        # NeMo imports at runtime) that must be in the dep list
+        required_in_deps = {
+            "numpy", "torch", "soundfile", "nemo",
+            "huggingface_hub", "onnxruntime",
+        }
+        missing = required_in_deps - declared_imports
+        self.assertEqual(
+            missing, set(),
+            f"canary-env pyproject.toml in Enable-Canary.ps1 is missing "
+            f"dependencies required by canary_worker.py: {missing}",
+        )
+
+    def test_canary_env_deps_verification_step_exists(self):
+        """Enable-Canary.ps1 must verify all dependencies after installation.
+
+        Regression: the script only verified the NeMo SALM import, missing
+        onnxruntime and other transitive deps.
+        """
+        content = (_INSTALLER_DIR / "Enable-Canary.ps1").read_text(encoding="utf-8")
+        # Must check onnxruntime specifically (was the missing dep)
+        self.assertIn(
+            "onnxruntime",
+            content,
+            "Enable-Canary.ps1 must verify onnxruntime is importable",
+        )
+        # Must check multiple deps, not just SALM
+        for dep in ("numpy", "soundfile", "torch", "huggingface_hub"):
+            self.assertIn(
+                dep,
+                content,
+                f"Enable-Canary.ps1 must verify {dep} is importable",
+            )
+
 
 class TestBuildInstallerScript(unittest.TestCase):
     """Build-Installer.ps1 must exist and be valid."""
@@ -114,7 +273,18 @@ class TestSpecFile(unittest.TestCase):
         self.assertIsNotNone(match)
         hidden = match.group(1)
         self.assertNotIn("huggingface_hub", hidden,
-                         "huggingface_hub must not be in hiddenimports (replaced by urllib)")
+                         "huggingface_hub must not be in hiddenimports "
+                         "(auto-collected as transitive dep of faster_whisper)")
+
+    def test_huggingface_hub_not_in_excludes(self):
+        """huggingface_hub must not be excluded — faster_whisper imports it at module level."""
+        spec = (_REPO_ROOT / "cv2t.spec").read_text(encoding="utf-8")
+        match = re.search(r"excludes\s*=\s*\[(.*?)\]", spec, re.DOTALL)
+        self.assertIsNotNone(match, "could not find excludes= block in cv2t.spec")
+        excludes = match.group(1)
+        self.assertNotIn("huggingface_hub", excludes,
+                         "huggingface_hub must not be in excludes — "
+                         "faster_whisper unconditionally imports it at module level")
 
     def test_strip_enabled(self):
         spec = (_REPO_ROOT / "cv2t.spec").read_text(encoding="utf-8")

@@ -22,11 +22,28 @@
 
 #Requires -Version 5.1
 
+param(
+    # Override the application directory. When launched from CV2T,
+    # PyInstaller 6+ places data files in _internal/ instead of beside
+    # the exe, so the caller passes the correct app root.
+    [string]$AppDir,
+
+    # Skip the automatic CV2T restart at the end.  Used by Test-CV2T.ps1
+    # which launches the app itself after Enable-Canary finishes.
+    [switch]$NoLaunch
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -- Determine install directory (same as this script) ------------------------
-$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# -- Determine install directory -----------------------------------------------
+if (-not $AppDir) {
+    $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    # If we are inside _internal/ or installer/, move up to the real app directory
+    if ((Split-Path -Leaf $AppDir) -in '_internal', 'installer') {
+        $AppDir = Split-Path -Parent $AppDir
+    }
+}
 $CanaryEnvDir = "$AppDir\canary-env"
 $ModelsDir = "$AppDir\models"
 $CanaryModelDir = "$ModelsDir\canary"
@@ -145,6 +162,8 @@ dependencies = [
     "torch>=2.1,<2.8",
     "accelerate",
     "huggingface-hub>=0.34.0",
+    "datasets>=4.0",
+    "onnxruntime>=1.16",
     "soundfile>=0.12",
     "numpy>=1.24",
 ]
@@ -160,16 +179,35 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 "@
-$canaryToml | Out-File -FilePath "$CanaryEnvDir\pyproject.toml" -Encoding utf8
 
-Write-Host "  Running uv sync (this may take several minutes)..."
-Push-Location $CanaryEnvDir
-try {
-    Invoke-NativeCommand 'uv sync' { uv sync --python $py311 }
-} finally {
-    Pop-Location
+# Check whether the environment is already up-to-date
+$tomlPath = "$CanaryEnvDir\pyproject.toml"
+$canaryPython = "$VenvDir\Scripts\python.exe"
+$envUpToDate = $false
+if ((Test-Path $tomlPath) -and (Test-Path $canaryPython)) {
+    $existingToml = (Get-Content $tomlPath -Raw -ErrorAction SilentlyContinue) -replace '\r\n', "`n"
+    $normalizedNew = $canaryToml -replace '\r\n', "`n"
+    if ($existingToml.Trim() -eq $normalizedNew.Trim()) {
+        # Verify the lockfile exists (uv sync was completed previously)
+        if (Test-Path "$CanaryEnvDir\uv.lock") {
+            $envUpToDate = $true
+        }
+    }
 }
-Write-Ok "Canary environment created"
+
+if ($envUpToDate) {
+    Write-Skip "Canary environment already up-to-date"
+} else {
+    $canaryToml | Out-File -FilePath $tomlPath -Encoding utf8
+    Write-Host "  Running uv sync (this may take several minutes)..."
+    Push-Location $CanaryEnvDir
+    try {
+        Invoke-NativeCommand 'uv sync' { uv sync --python $py311 }
+    } finally {
+        Pop-Location
+    }
+    Write-Ok "Canary environment created"
+}
 
 # -- Verify PyTorch CUDA -----------------------------------------------------
 Write-Step "Verifying PyTorch CUDA support..."
@@ -201,29 +239,96 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "PyTorch CUDA verified"
 
 # -- Verify NeMo import ------------------------------------------------------
-Write-Step "Verifying NeMo import..."
+Write-Step "Verifying all Canary dependencies..."
+$depCheckScript = @'
+import sys
+errors = []
+
+# Core packages used directly by canary_worker.py
+for mod in ('numpy', 'soundfile', 'torch', 'accelerate', 'huggingface_hub'):
+    try:
+        __import__(mod)
+    except ImportError as e:
+        errors.append(f'{mod}: {e}')
+
+# onnxruntime — used by NeMo ASR internals (not declared as a nemo dep)
+try:
+    from onnxruntime import InferenceSession
+except ImportError as e:
+    errors.append(f'onnxruntime (InferenceSession): {e}')
+
+# Transitive deps required at runtime by NeMo's import chain
+for mod in ('transformers', 'sentencepiece', 'omegaconf', 'lightning', 'peft', 'datasets.distributed'):
+    try:
+        __import__(mod)
+    except ImportError as e:
+        errors.append(f'{mod}: {e}')
+
+# The actual model class import
+try:
+    from nemo.collections.speechlm2.models import SALM
+except ImportError as e:
+    errors.append(f'nemo SALM: {e}')
+
+if errors:
+    print('MISSING DEPENDENCIES:', file=sys.stderr)
+    for e in errors:
+        print(f'  - {e}', file=sys.stderr)
+    sys.exit(1)
+else:
+    print('All Canary dependencies verified.')
+'@
 $prevPref = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & $canaryPython -c "from nemo.collections.speechlm2.models import SALM; print('NeMo SALM import OK')" 2>&1 | ForEach-Object { Write-Host "  $_" }
+    & $canaryPython -c $depCheckScript 2>&1 | ForEach-Object { Write-Host "  $_" }
 } finally {
     $ErrorActionPreference = $prevPref
 }
 if ($LASTEXITCODE -ne 0) {
-    Write-Warn "NeMo import failed. The Canary engine may not work correctly."
+    Write-Warn "One or more Canary dependencies are missing or broken."
     Write-Host "  Try: cd '$CanaryEnvDir'; uv sync" -ForegroundColor Yellow
 } else {
-    Write-Ok "NeMo SALM import verified"
+    Write-Ok "All Canary dependencies verified"
 }
 
-# -- Download Canary model ---------------------------------------------------
-Write-Step "Downloading Canary model (~3 GB)..."
-if (Test-Path "$CanaryModelDir\config.json") {
-    Write-Skip "Canary model already present in $CanaryModelDir"
-} else {
+# -- Download / validate Canary model -----------------------------------------
+Write-Step "Checking Canary model (~3 GB)..."
+
+# Required files and minimum size for model.safetensors (~3 GB)
+$requiredFiles = @('config.json', 'model.safetensors')
+$minModelSizeBytes = 1GB   # safeguard against truncated downloads
+
+$modelValid = $true
+foreach ($f in $requiredFiles) {
+    $fp = Join-Path $CanaryModelDir $f
+    if (-not (Test-Path $fp)) {
+        Write-Host "  Missing: $f" -ForegroundColor Yellow
+        $modelValid = $false
+    }
+}
+if ($modelValid) {
+    $safetensorsSize = (Get-Item "$CanaryModelDir\model.safetensors").Length
+    if ($safetensorsSize -lt $minModelSizeBytes) {
+        Write-Host "  model.safetensors is only $([math]::Round($safetensorsSize / 1MB)) MB (expected ~3 GB) -- likely truncated" -ForegroundColor Yellow
+        $modelValid = $false
+    }
+}
+
+if ($modelValid) {
+    Write-Skip "Canary model already present and valid in $CanaryModelDir"
+    # Check for upstream updates (fast — only fetches metadata)
+    Write-Host "  Checking for model updates..." -ForegroundColor DarkGray
+}
+
+# snapshot_download is safe to re-run: it checks local cache etags/metadata
+# against the remote and only downloads changed or missing files.
+if (-not $modelValid) {
     New-Item -ItemType Directory -Path $CanaryModelDir -Force | Out-Null
-    $downloadScript = @'
-import sys
+    Write-Host "  Downloading Canary model files..."
+}
+$downloadScript = @'
+import sys, os
 target_dir = sys.argv[1]
 from huggingface_hub import snapshot_download
 try:
@@ -237,18 +342,32 @@ except Exception as e:
     print('ERROR: ' + str(e), file=sys.stderr)
     sys.exit(1)
 '@
-    $prevPref = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & $canaryPython -c $downloadScript "$CanaryModelDir" 2>&1 | ForEach-Object { Write-Host "  $_" }
-    } finally {
-        $ErrorActionPreference = $prevPref
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $canaryPython -c $downloadScript "$CanaryModelDir" 2>&1 | ForEach-Object { Write-Host "  $_" }
+} finally {
+    $ErrorActionPreference = $prevPref
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "Canary model download/update failed."
+    Write-Host "  You can retry later by re-running this script." -ForegroundColor Yellow
+} else {
+    # Final validation after download
+    $postValid = $true
+    foreach ($f in $requiredFiles) {
+        if (-not (Test-Path (Join-Path $CanaryModelDir $f))) {
+            Write-Warn "Expected file still missing after download: $f"
+            $postValid = $false
+        }
     }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Canary model download failed."
-        Write-Host "  You can retry later by re-running this script." -ForegroundColor Yellow
-    } else {
-        Write-Ok "Canary model downloaded to $CanaryModelDir"
+    if ($postValid) {
+        $finalSize = (Get-Item "$CanaryModelDir\model.safetensors").Length
+        if ($finalSize -lt $minModelSizeBytes) {
+            Write-Warn "model.safetensors is only $([math]::Round($finalSize / 1MB)) MB -- download may be incomplete"
+        } else {
+            Write-Ok "Canary model verified in $CanaryModelDir ($([math]::Round($finalSize / 1GB, 1)) GB)"
+        }
     }
 }
 
@@ -261,10 +380,28 @@ Write-Host ""
 Write-Host "  Environment: $CanaryEnvDir" -ForegroundColor DarkGray
 Write-Host "  Model:       $CanaryModelDir" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  Next steps:" -ForegroundColor White
-Write-Host "    1. Launch CV2T" -ForegroundColor White
-Write-Host "    2. Open Settings" -ForegroundColor White
-Write-Host "    3. Select 'canary' as the Engine" -ForegroundColor White
+
+# -- Restart CV2T -------------------------------------------------------------
+$cv2tExe = Join-Path $AppDir "cv2t.exe"
+if ($NoLaunch) {
+    Write-Skip "Auto-launch skipped (-NoLaunch)"
+} elseif (Test-Path $cv2tExe) {
+    Write-Step "Restarting CV2T..."
+    # Stop the running instance so the new launch does not hit the
+    # "Another instance is already running" single-instance guard.
+    Get-Process -Name 'cv2t' -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2   # allow the process to fully exit
+    Start-Process -FilePath $cv2tExe -WorkingDirectory $AppDir
+    Write-Ok "CV2T launched - select 'canary' as the Engine in Settings."
+} else {
+    Write-Host "  Next steps:" -ForegroundColor White
+    Write-Host "    1. Launch CV2T" -ForegroundColor White
+    Write-Host "    2. Open Settings" -ForegroundColor White
+    Write-Host "    3. Select 'canary' as the Engine" -ForegroundColor White
+}
 Write-Host ""
 
-Read-Host "  Press Enter to close"
+# -- Auto-close after 20 seconds ----------------------------------------------
+Write-Host "  This window will close in 20 seconds..." -ForegroundColor DarkGray
+Start-Sleep -Seconds 20

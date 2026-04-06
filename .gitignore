@@ -46,5 +46,8 @@ installer/Output/
 # Models (user downloads)
 models/
 
+# Dev test environment
+dev-temp/
+
 # UV
 uv.lock

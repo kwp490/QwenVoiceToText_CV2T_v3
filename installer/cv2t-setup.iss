@@ -37,8 +37,14 @@ DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir=Output
 OutputBaseFilename=CV2T-Setup-{#MyAppVersion}
+; Use /DFastCompress with iscc for fast dev builds (larger output, much faster)
+#ifdef FastCompress
+Compression=lzma2/fast
+SolidCompression=no
+#else
 Compression=lzma2/ultra64
 SolidCompression=yes
+#endif
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible

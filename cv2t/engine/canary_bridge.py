@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -40,7 +42,14 @@ def _get_canary_paths() -> tuple[Optional[str], Optional[str]]:
     app_dir = _get_app_dir()
 
     python_path = os.path.join(app_dir, "canary-env", ".venv", "Scripts", "python.exe")
-    worker_path = os.path.join(app_dir, "canary_worker.py")
+
+    # PyInstaller 6+ places data files in _internal/ (sys._MEIPASS),
+    # not beside the exe.
+    data_dir = getattr(sys, "_MEIPASS", app_dir)
+    worker_path = os.path.join(data_dir, "canary_worker.py")
+    if not os.path.isfile(worker_path):
+        # Fallback: beside the exe (legacy layout or dev)
+        worker_path = os.path.join(app_dir, "canary_worker.py")
 
     if os.path.isfile(python_path) and os.path.isfile(worker_path):
         return python_path, worker_path
@@ -71,6 +80,8 @@ class CanaryBridgeEngine(SpeechEngine):
         self._process: Optional[subprocess.Popen] = None
         self._python_path: Optional[str] = None
         self._worker_path: Optional[str] = None
+        self._stderr_lines: list[str] = []
+        self._stderr_thread: Optional[threading.Thread] = None
 
     @property
     def name(self) -> str:
@@ -87,12 +98,86 @@ class CanaryBridgeEngine(SpeechEngine):
         self._process.stdin.write(line)
         self._process.stdin.flush()
 
-    def _recv(self) -> dict:
-        """Read a JSON line from the worker's stdout."""
+    def _drain_stderr(self) -> None:
+        """Continuously read stderr in a background thread.
+
+        Without this, the worker can deadlock when its stderr pipe buffer
+        fills (64 KB on Windows) during model load — the bridge is blocked
+        on stdout.readline() while the worker is blocked on a stderr write.
+        """
+        assert self._process is not None and self._process.stderr is not None
+        try:
+            for line in self._process.stderr:
+                stripped = line.rstrip()
+                if stripped:
+                    self._stderr_lines.append(stripped)
+                    log.debug("[canary-worker] %s", stripped)
+        except ValueError:
+            pass  # stderr closed
+
+    def _recv(self, timeout: float | None = None) -> dict:
+        """Read a JSON line from the worker's stdout.
+
+        If *timeout* is given (seconds), raises ``TimeoutError`` when
+        no complete line arrives before the deadline.
+        """
         assert self._process is not None and self._process.stdout is not None
-        line = self._process.stdout.readline()
+
+        if timeout is not None:
+            # Windows selectors don't support pipe file-objects, so use a
+            # background thread to perform the blocking readline.
+            result_box: list[str | None] = [None]
+
+            def _read() -> None:
+                try:
+                    result_box[0] = self._process.stdout.readline()
+                except Exception:
+                    result_box[0] = None
+
+            reader = threading.Thread(target=_read, daemon=True,
+                                      name="canary-recv")
+            reader.start()
+            reader.join(timeout=timeout)
+
+            if reader.is_alive():
+                # readline still blocking — timeout expired
+                # Kill the subprocess so the thread unblocks.
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+                reader.join(timeout=5)
+                stderr_text = "\n".join(self._stderr_lines[-50:])
+                detail = ""
+                if stderr_text:
+                    log.error("Canary worker stderr:\n%s", stderr_text.strip())
+                    detail = f"\n{stderr_text.strip()}"
+                raise TimeoutError(
+                    f"Canary worker did not respond within {timeout:.0f}s"
+                    f"{detail}"
+                )
+
+            line = result_box[0]
+            if not line:
+                # Worker died — fall through to error handling below
+                pass
+            else:
+                return json.loads(line.strip())
+
+        else:
+            line = self._process.stdout.readline()
+
         if not line:
-            raise RuntimeError("Canary worker process terminated unexpectedly")
+            # Worker died — collect stderr from the drain thread
+            stderr_text = "\n".join(self._stderr_lines[-50:])
+            rc = self._process.poll()
+            detail = f" (exit code {rc})" if rc is not None else ""
+            if stderr_text:
+                log.error("Canary worker stderr:\n%s", stderr_text.strip())
+                detail += f"\n{stderr_text.strip()}"
+            raise RuntimeError(
+                f"Canary worker process terminated unexpectedly{detail}"
+            )
         return json.loads(line.strip())
 
     def load(self, model_path: str, device: str = "cuda") -> None:
@@ -123,6 +208,15 @@ class CanaryBridgeEngine(SpeechEngine):
             creationflags=creationflags,
         )
 
+        # Drain stderr in a background thread to prevent pipe-buffer
+        # deadlocks (the worker redirects stdout→stderr, so *all* log
+        # output from NeMo/torch goes there).
+        self._stderr_lines = []
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, daemon=True, name="canary-stderr",
+        )
+        self._stderr_thread.start()
+
         # Send load command
         self._send({
             "command": "load",
@@ -130,8 +224,10 @@ class CanaryBridgeEngine(SpeechEngine):
             "device": device,
         })
 
-        # Wait for model to load (this can take 30-60 seconds)
-        response = self._recv()
+        # Wait for model to load (can take 30-60 s on first run, up to
+        # several minutes if NeMo compiles kernels).  Cap at 5 minutes
+        # so the UI doesn't hang indefinitely.
+        response = self._recv(timeout=300)
         if response.get("status") != "ready":
             error_msg = response.get("message", "Unknown error")
             self._cleanup_process()

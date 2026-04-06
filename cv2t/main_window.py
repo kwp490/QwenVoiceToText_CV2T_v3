@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -58,10 +59,11 @@ from ._constants import (
     SYSTEM_RESUME_DELAY_MS,
     WM_POWERBROADCAST,
 )
-from .config import DEFAULT_LOG_DIR, Settings
+from .config import DEFAULT_LOG_DIR, DEFAULT_PRESETS_DIR, Settings
 from .engine import ENGINES
 from .hotkeys import HotkeyManager
 from ._resource_monitor import ResourceMonitor
+from .pro_preset import ProPreset, bootstrap_presets, load_all_presets
 from .text_processor import TextProcessor, load_api_key_from_keyring
 from .workers import Worker
 
@@ -244,11 +246,23 @@ class MainWindow(QMainWindow):
         # ── Professional Mode ────────────────────────────────────────────────
         self._api_key: str = ""
         self._text_processor: Optional[TextProcessor] = None
+        self._pro_worker: Optional[Worker] = None
+        self._pro_context: Optional[tuple[str, str]] = None  # (ts, original)
+        self._pro_timeout: Optional[QTimer] = None
+        self._pro_presets: dict[str, ProPreset] = {}
+        self._active_preset: Optional[ProPreset] = None
+
+        # Bootstrap presets directory and load presets
+        bootstrap_presets(DEFAULT_PRESETS_DIR)
+        self._pro_presets = load_all_presets(DEFAULT_PRESETS_DIR)
+        self._active_preset = self._pro_presets.get(settings.pro_active_preset)
+
         if settings.store_api_key:
             self._api_key = load_api_key_from_keyring()
-        if settings.professional_mode and self._api_key:
+        if settings.professional_mode and self._api_key and self._active_preset:
             self._text_processor = TextProcessor(
-                api_key=self._api_key, model=settings.pro_model
+                api_key=self._api_key,
+                model=self._active_preset.model or "gpt-5.4-mini",
             )
 
         # ── Build UI ─────────────────────────────────────────────────────────
@@ -398,6 +412,23 @@ class MainWindow(QMainWindow):
         bottom_row = QHBoxLayout()
         btn_settings = QPushButton("\u2699  Settings")
         btn_settings.clicked.connect(self._on_open_settings)
+
+        # Professional Mode controls
+        _pro_on = self.settings.professional_mode
+        self._btn_pro_toggle = QPushButton("PRO: ON" if _pro_on else "PRO: OFF")
+        self._btn_pro_toggle.setCheckable(True)
+        self._btn_pro_toggle.setChecked(_pro_on)
+        self._btn_pro_toggle.setStyleSheet(self._pro_toggle_style(_pro_on))
+        self._btn_pro_toggle.toggled.connect(self._on_pro_toggle)
+
+        self._combo_preset = QComboBox()
+        self._combo_preset.setMinimumWidth(160)
+        self._refresh_preset_combo()
+        self._combo_preset.currentTextChanged.connect(self._on_preset_combo_changed)
+
+        btn_pro_settings = QPushButton("\u2695  Professional")
+        btn_pro_settings.clicked.connect(self._on_open_pro_settings)
+
         btn_clear = QPushButton("\U0001f5d1  Clear Logs && History")
         btn_clear.clicked.connect(self._on_clear_logs_and_history)
         btn_copy_logs = QPushButton("\U0001f4cb  Copy Logs")
@@ -405,6 +436,9 @@ class MainWindow(QMainWindow):
         btn_quit = QPushButton("Quit")
         btn_quit.clicked.connect(self.close)
         bottom_row.addWidget(btn_settings)
+        bottom_row.addWidget(self._btn_pro_toggle)
+        bottom_row.addWidget(self._combo_preset)
+        bottom_row.addWidget(btn_pro_settings)
         bottom_row.addWidget(btn_clear)
         bottom_row.addWidget(btn_copy_logs)
         bottom_row.addStretch()
@@ -739,31 +773,37 @@ class MainWindow(QMainWindow):
             if (
                 self.settings.professional_mode
                 and self._text_processor is not None
+                and self._active_preset is not None
             ):
                 self._log_ui("Cleaning up text…")
 
-                s = self.settings
+                preset = self._active_preset
 
                 def _cleanup():
-                    return self._text_processor.process(
+                    result = self._text_processor.process(
                         text,
-                        fix_tone=s.pro_fix_tone,
-                        fix_grammar=s.pro_fix_grammar,
-                        fix_punctuation=s.pro_fix_punctuation,
+                        preset=preset,
                     )
+                    log.info("Professional cleanup worker finished (%d chars)", len(result))
+                    return result
 
-                worker = Worker(_cleanup)
-                worker.signals.result.connect(
-                    lambda cleaned, _ts=ts, _orig=text: self._on_professional_result(
-                        _ts, _orig, str(cleaned).strip()
-                    )
-                )
-                worker.signals.error.connect(
-                    lambda err, _ts=ts, _orig=text: self._on_professional_error(
-                        _ts, _orig, err
-                    )
-                )
-                self._pool.start(worker)
+                # Store context for the bound-method handlers so we
+                # don't need lambdas (lambdas prevent QObject connection
+                # tracking and allow the Worker to be GC'd prematurely).
+                self._pro_context = (ts, text)
+                self._pro_worker = Worker(_cleanup)
+                self._pro_worker.setAutoDelete(False)  # we manage lifetime
+                self._pro_worker.signals.result.connect(self._on_professional_result)
+                self._pro_worker.signals.error.connect(self._on_professional_error)
+                self._pro_worker.signals.finished.connect(self._on_professional_finished)
+                self._pool.start(self._pro_worker)
+
+                # Safety timeout — if signal delivery fails for any
+                # reason, fall back after the API timeout + buffer.
+                self._pro_timeout = QTimer(self)
+                self._pro_timeout.setSingleShot(True)
+                self._pro_timeout.timeout.connect(self._on_professional_timeout)
+                self._pro_timeout.start(20_000)  # 20 s
                 return
 
             self._add_history(ts, text, success=True)
@@ -794,11 +834,16 @@ class MainWindow(QMainWindow):
             else None,
         )
 
-    @Slot()
-    def _on_professional_result(
-        self, ts: str, original: str, cleaned: str
-    ) -> None:
+    @Slot(object)
+    def _on_professional_result(self, cleaned_raw: object) -> None:
         """Handle the cleaned text from Professional Mode."""
+        log.info("Professional result signal delivered to main thread")
+        ctx = self._pro_context  # read BEFORE cancel clears it
+        self._cancel_pro_timeout()
+        if ctx is None:
+            return  # already handled (e.g. by timeout)
+        ts, original = ctx
+        cleaned = str(cleaned_raw).strip()
         if cleaned and cleaned != original:
             self._log_ui(f"Professional cleanup: {len(original)} → {len(cleaned)} chars")
             self._add_history(ts, cleaned, success=True, original_text=original)
@@ -829,9 +874,15 @@ class MainWindow(QMainWindow):
             else None,
         )
 
-    @Slot()
-    def _on_professional_error(self, ts: str, original: str, err: str) -> None:
+    @Slot(str)
+    def _on_professional_error(self, err: str) -> None:
         """Professional Mode cleanup failed — fall back to raw text."""
+        log.info("Professional error signal delivered to main thread")
+        ctx = self._pro_context  # read BEFORE cancel clears it
+        self._cancel_pro_timeout()
+        if ctx is None:
+            return  # already handled (e.g. by timeout)
+        ts, original = ctx
         self._log_ui(f"Professional cleanup failed: {err}", error=True)
         self._add_history(ts, original, success=True)
 
@@ -840,6 +891,54 @@ class MainWindow(QMainWindow):
             copied = set_clipboard_text(original)
             if copied:
                 self._log_ui("Copied original text to clipboard (cleanup failed)")
+            else:
+                self._log_ui("Failed to copy to clipboard", error=True)
+
+        if copied and self._chk_auto_paste.isChecked():
+            def _paste():
+                simulate_paste(wait_for_modifiers=self._chk_hotkeys.isChecked())
+            w = Worker(_paste)
+            self._pool.start(w)
+
+        QTimer.singleShot(
+            STATE_RESET_IDLE_MS,
+            lambda: self._set_dictation_state(DictationState.IDLE)
+            if self._dictation_state in (DictationState.SUCCESS, DictationState.ERROR)
+            else None,
+        )
+
+    @Slot()
+    def _on_professional_finished(self) -> None:
+        """Worker done — drop the reference (prevent leak)."""
+        self._pro_worker = None
+
+    def _cancel_pro_timeout(self) -> None:
+        """Stop the safety timer and clear professional-mode context."""
+        if self._pro_timeout is not None:
+            self._pro_timeout.stop()
+            self._pro_timeout.deleteLater()
+            self._pro_timeout = None
+        self._pro_context = None
+
+    @Slot()
+    def _on_professional_timeout(self) -> None:
+        """Safety net — professional cleanup did not complete in time."""
+        ctx = self._pro_context
+        self._pro_timeout = None
+        self._pro_context = None
+        self._pro_worker = None
+        if ctx is None:
+            return  # result/error already handled normally
+        ts, original = ctx
+        log.warning("Professional cleanup timed out — falling back to original text")
+        self._log_ui("Professional cleanup timed out — using original text", error=True)
+        self._add_history(ts, original, success=True)
+
+        copied = True
+        if self._chk_auto_copy.isChecked():
+            copied = set_clipboard_text(original)
+            if copied:
+                self._log_ui("Copied original text to clipboard")
             else:
                 self._log_ui("Failed to copy to clipboard", error=True)
 
@@ -938,9 +1037,8 @@ class MainWindow(QMainWindow):
         old_model_path = self.settings.model_path
         old_device = self.settings.device
 
-        dlg = SettingsDialog(self.settings, parent=self, api_key=self._api_key)
+        dlg = SettingsDialog(self.settings, parent=self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
-            self._api_key = dlg.api_key
             self._apply_settings()
 
             # If engine, model path, or device changed, prompt to reload
@@ -985,6 +1083,73 @@ class MainWindow(QMainWindow):
                             self._engine = engine_cls()
                             self._lbl_engine.setText(f"Engine: {self._engine.name}")
                     self._on_reload_model()
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # PROFESSIONAL MODE UI
+    # ═════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _pro_toggle_style(enabled: bool) -> str:
+        if enabled:
+            return (
+                "QPushButton { background-color: #2e7d32; color: white; "
+                "font-weight: bold; padding: 4px 12px; border-radius: 4px; }"
+            )
+        return (
+            "QPushButton { background-color: #616161; color: white; "
+            "padding: 4px 12px; border-radius: 4px; }"
+        )
+
+    def _refresh_preset_combo(self) -> None:
+        """Populate the preset combo box from the loaded presets."""
+        self._combo_preset.blockSignals(True)
+        self._combo_preset.clear()
+        for name in sorted(self._pro_presets.keys()):
+            self._combo_preset.addItem(name)
+        idx = self._combo_preset.findText(self.settings.pro_active_preset)
+        if idx >= 0:
+            self._combo_preset.setCurrentIndex(idx)
+        elif self._combo_preset.count() > 0:
+            self._combo_preset.setCurrentIndex(0)
+        self._combo_preset.blockSignals(False)
+
+    @Slot(bool)
+    def _on_pro_toggle(self, checked: bool) -> None:
+        """Toggle Professional Mode on/off from the main window button."""
+        self.settings.professional_mode = checked
+        self._btn_pro_toggle.setText("PRO: ON" if checked else "PRO: OFF")
+        self._btn_pro_toggle.setStyleSheet(self._pro_toggle_style(checked))
+        self._apply_settings()
+        self.settings.save()
+
+    @Slot(str)
+    def _on_preset_combo_changed(self, name: str) -> None:
+        """Handle preset selection change from the combo box."""
+        if not name:
+            return
+        self.settings.pro_active_preset = name
+        self._active_preset = self._pro_presets.get(name)
+        if self.settings.professional_mode:
+            self._apply_settings()
+        self.settings.save()
+
+    @Slot()
+    def _on_open_pro_settings(self) -> None:
+        """Open the Professional Mode settings dialog."""
+        from .pro_settings_dialog import ProSettingsDialog
+
+        dlg = ProSettingsDialog(
+            settings=self.settings,
+            presets=self._pro_presets,
+            presets_dir=DEFAULT_PRESETS_DIR,
+            parent=self,
+            api_key=self._api_key,
+        )
+        if dlg.exec() == ProSettingsDialog.DialogCode.Accepted:
+            self._api_key = dlg.api_key
+            self._pro_presets = dlg.presets
+            self._refresh_preset_combo()
+            self._apply_settings()
 
     @staticmethod
     def _engines_need_restart(old_engine: str, new_engine: str) -> bool:
@@ -1058,9 +1223,11 @@ class MainWindow(QMainWindow):
         self._chk_auto_paste.setChecked(s.auto_paste)
 
         # Professional Mode
-        if s.professional_mode and self._api_key:
+        self._active_preset = self._pro_presets.get(s.pro_active_preset)
+        if s.professional_mode and self._api_key and self._active_preset:
+            model = self._active_preset.model or "gpt-5.4-mini"
             self._text_processor = TextProcessor(
-                api_key=self._api_key, model=s.pro_model
+                api_key=self._api_key, model=model,
             )
             self._log_ui("Professional Mode enabled")
         else:

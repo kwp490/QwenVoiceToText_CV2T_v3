@@ -95,6 +95,11 @@ a = Analysis(
         'scipy',
         'pandas',
         'PIL',
+        # Qt submodules not used by CV2T (only QtWidgets/QtCore/QtGui needed)
+        'PySide6.QtQuick',
+        'PySide6.QtQml',
+        'PySide6.QtPdf',
+        'safetensors',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -103,8 +108,9 @@ a = Analysis(
 )
 
 # ── Strip unnecessary binaries ───────────────────────────────────────────────
-# CV2T only uses QtWidgets/QtCore/QtGui. Remove Qt Quick/Qml/Pdf, the OpenGL
-# software renderer and PyAV video codec DLLs.
+# Post-process safety net: remove DLLs that sneak in via transitive deps.
+# Most exclusions are now handled at Analysis level (excludes= list above),
+# but binary-level patterns (DLL filenames) can't be caught there.
 import re as _re
 
 _STRIP_PATTERNS = [
@@ -113,8 +119,6 @@ _STRIP_PATTERNS = [
     _re.compile(r'Qt6Pdf', _re.I),
     _re.compile(r'opengl32sw', _re.I),
     _re.compile(r'cudnn', _re.I),             # cuDNN — not needed for Whisper
-    _re.compile(r'huggingface_hub', _re.I),   # replaced by stdlib urllib
-    _re.compile(r'safetensors', _re.I),       # huggingface_hub transitive dep
 ]
 
 def _should_keep(entry):
@@ -122,7 +126,6 @@ def _should_keep(entry):
     return not any(p.search(name) for p in _STRIP_PATTERNS)
 
 a.binaries = [b for b in a.binaries if _should_keep(b)]
-a.datas = [d for d in a.datas if _should_keep(d)]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -135,7 +138,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
 )
@@ -146,7 +149,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=True,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='cv2t',
 )

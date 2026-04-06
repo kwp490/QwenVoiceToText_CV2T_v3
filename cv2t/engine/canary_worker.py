@@ -133,6 +133,19 @@ def _load_model(model_path: str, device: str = "cuda") -> None:
         _wandb.__version__ = "0.0.0"
         sys.modules["wandb"] = _wandb
 
+    # Stub datasets.distributed — NeMo imports it transitively but inference
+    # doesn't need distributed dataset splitting.  If the real submodule is
+    # missing (e.g. stripped or incompatible datasets version), provide a shim.
+    if "datasets.distributed" not in sys.modules:
+        try:
+            import datasets.distributed  # noqa: F401 — use real module if available
+        except (ImportError, ModuleNotFoundError):
+            _dd = types.ModuleType("datasets.distributed")
+            _dd.__spec__ = importlib.machinery.ModuleSpec("datasets.distributed", None)
+            _dd.__package__ = "datasets"
+            _dd.split_dataset_by_node = lambda dataset, rank=0, world_size=1: dataset
+            sys.modules["datasets.distributed"] = _dd
+
     # Stub transformers version check (NeMo 2.x vs. newer huggingface-hub)
     if "transformers.dependency_versions_check" not in sys.modules:
         _dvc = types.ModuleType("transformers.dependency_versions_check")
@@ -230,20 +243,43 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
         os.close(fd)
         try:
             sf.write(chunk_path, chunk, 16000)
+
+            duration = len(chunk) / 16000
+            max_tokens = max(64, int(duration * 20))
+
             conversation = [[{
                 "role": "user",
                 "content": (
-                    f"Transcribe the following audio in {language}: "
+                    f"Transcribe the following: "
                     f"{_model.audio_locator_tag}"
                 ),
                 "audio": [chunk_path],
             }]]
             with torch.no_grad():
-                output = _model.generate(prompts=conversation, max_new_tokens=512)
+                output = _model.generate(
+                    prompts=conversation, max_new_tokens=max_tokens,
+                )
+
+            # generate() returns a list of token-ID tensors, not strings.
+            # Decode via the model's tokenizer, matching the native engine.
             if isinstance(output, list) and output:
-                text = output[0] if isinstance(output[0], str) else str(output[0])
+                response = output[0]
             else:
-                text = str(output)
+                response = output
+            if isinstance(response, str):
+                text = response
+            elif hasattr(response, "cpu"):
+                # Tensor of token IDs — decode to text.
+                # The tensor may be multi-dimensional (e.g. [1, seq_len])
+                # so squeeze and convert to a flat Python list of ints
+                # before passing to ids_to_text.
+                ids = response.cpu().squeeze().tolist()
+                if isinstance(ids, int):
+                    ids = [ids]
+                text = _model.tokenizer.ids_to_text(ids)
+                text = text.replace("<|endoftext|>", "")
+            else:
+                text = str(response)
             texts.append(text.strip())
         finally:
             try:
@@ -256,11 +292,17 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
 
 # ── JSON-lines protocol ─────────────────────────────────────────────────────
 
+# Keep a reference to the real stdout for protocol messages.
+# sys.stdout is redirected to stderr in main() so that stray print()
+# calls from NeMo / torch / third-party code do not corrupt the
+# JSON-lines channel.
+_proto_stdout = sys.stdout
+
 
 def _send(obj: dict) -> None:
-    """Write a JSON line to stdout."""
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    """Write a JSON line to the protocol channel (real stdout)."""
+    _proto_stdout.write(json.dumps(obj) + "\n")
+    _proto_stdout.flush()
 
 
 def _recv() -> dict | None:
@@ -272,10 +314,17 @@ def _recv() -> dict | None:
 
 
 def main() -> int:
+    global _model
+
+    # Redirect stdout -> stderr so that stray print() calls from NeMo,
+    # torch, transformers, etc. do not land on the JSON-lines protocol
+    # channel.  Protocol messages use _proto_stdout (saved above).
+    sys.stdout = sys.stderr
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [canary-worker] %(levelname)s %(message)s",
-        stream=sys.stderr,  # Logs go to stderr; protocol goes to stdout
+        stream=sys.stderr,  # Logs go to stderr; protocol goes to _proto_stdout
     )
 
     log.info("Canary worker started (pid=%d)", os.getpid())
@@ -314,7 +363,6 @@ def main() -> int:
             _send({"status": "error", "message": f"Unknown command: {cmd}"})
 
     # Cleanup
-    global _model
     if _model is not None:
         del _model
         _model = None

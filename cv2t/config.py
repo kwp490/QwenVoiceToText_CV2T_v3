@@ -18,6 +18,7 @@ INSTALL_DIR = Path(os.environ.get("CV2T_HOME", r"C:\Program Files\CV2T"))
 
 DEFAULT_CONFIG_DIR = INSTALL_DIR / "config"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "settings.json"
+DEFAULT_PRESETS_DIR = DEFAULT_CONFIG_DIR / "presets"
 DEFAULT_MODELS_DIR = str(INSTALL_DIR / "models")
 DEFAULT_LOG_DIR = INSTALL_DIR / "logs"
 DEFAULT_TEMP_DIR = INSTALL_DIR / "temp"
@@ -51,10 +52,7 @@ class Settings:
 
     # ── Professional Mode ─────────────────────────────────────────────────────
     professional_mode: bool = False
-    pro_fix_tone: bool = True
-    pro_fix_grammar: bool = True
-    pro_fix_punctuation: bool = True
-    pro_model: str = "gpt-5.4-mini"
+    pro_active_preset: str = "General Professional"
     store_api_key: bool = False
 
     # ── Helpers ───────────────────────────────────────────────────────────────

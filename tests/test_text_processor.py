@@ -33,6 +33,36 @@ class BuildSystemPromptTests(unittest.TestCase):
         prompt = _build_system_prompt(False, False, False)
         self.assertEqual(prompt, "")
 
+    def test_custom_prompt_replaces_default_tone(self):
+        prompt = _build_system_prompt(
+            True, False, False, custom_prompt="Use a legal tone."
+        )
+        self.assertIn("legal tone", prompt.lower())
+        self.assertNotIn("professional and neutral", prompt.lower())
+
+    def test_custom_prompt_included_when_tone_off(self):
+        prompt = _build_system_prompt(
+            False, True, False, custom_prompt="Always use Oxford comma."
+        )
+        self.assertIn("oxford comma", prompt.lower())
+        self.assertIn("grammar", prompt.lower())
+
+    def test_vocabulary_appended(self):
+        prompt = _build_system_prompt(
+            True, True, True, vocabulary="Kubernetes, gRPC, OAuth2"
+        )
+        self.assertIn("kubernetes", prompt.lower())
+        self.assertIn("grpc", prompt.lower())
+        self.assertIn("preserve these terms", prompt.lower())
+
+    def test_empty_vocabulary_ignored(self):
+        prompt = _build_system_prompt(True, True, True, vocabulary="")
+        self.assertNotIn("preserve these terms", prompt.lower())
+
+    def test_all_flags_off_with_custom_prompt_returns_empty(self):
+        prompt = _build_system_prompt(False, False, False, custom_prompt="")
+        self.assertEqual(prompt, "")
+
 
 class SanitizeErrorTests(unittest.TestCase):
     """Tests for API key redaction in error messages."""
@@ -110,6 +140,34 @@ class TextProcessorProcessTests(unittest.TestCase):
         proc = TextProcessor(api_key="", model="gpt-5.4-mini")
         result = proc.process("angry text", fix_tone=True)
         self.assertEqual(result, "angry text")
+
+    def test_process_with_preset(self):
+        from cv2t.pro_preset import ProPreset
+
+        proc = self._make_processor()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Cleaned text."
+        proc._client.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        preset = ProPreset(
+            name="Test",
+            system_prompt="Be formal.",
+            fix_tone=True,
+            fix_grammar=True,
+            fix_punctuation=True,
+            vocabulary="API, REST",
+        )
+        result = proc.process("messy text", preset=preset)
+        self.assertEqual(result, "Cleaned text.")
+        proc._client.chat.completions.create.assert_called_once()
+        # Verify the system prompt includes custom prompt and vocabulary
+        call_args = proc._client.chat.completions.create.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        system_msg = messages[0]["content"]
+        self.assertIn("formal", system_msg.lower())
+        self.assertIn("api", system_msg.lower())
 
 
 class TextProcessorValidateKeyTests(unittest.TestCase):

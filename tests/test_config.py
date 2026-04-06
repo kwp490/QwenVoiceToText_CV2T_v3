@@ -56,10 +56,7 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertTrue(s.hotkeys_enabled)
         # Professional Mode defaults
         self.assertFalse(s.professional_mode)
-        self.assertTrue(s.pro_fix_tone)
-        self.assertTrue(s.pro_fix_grammar)
-        self.assertTrue(s.pro_fix_punctuation)
-        self.assertEqual(s.pro_model, "gpt-5.4-mini")
+        self.assertEqual(s.pro_active_preset, "General Professional")
         self.assertFalse(s.store_api_key)
 
     def test_load_missing_file_returns_defaults(self):
@@ -79,20 +76,14 @@ class SettingsConfigTests(unittest.TestCase):
 
             settings = Settings(
                 professional_mode=True,
-                pro_fix_tone=False,
-                pro_fix_grammar=True,
-                pro_fix_punctuation=False,
-                pro_model="gpt-5.4-nano",
+                pro_active_preset="Technical / Engineering",
                 store_api_key=True,
             )
             settings.save(config_path)
             loaded = Settings.load(config_path)
 
             self.assertTrue(loaded.professional_mode)
-            self.assertFalse(loaded.pro_fix_tone)
-            self.assertTrue(loaded.pro_fix_grammar)
-            self.assertFalse(loaded.pro_fix_punctuation)
-            self.assertEqual(loaded.pro_model, "gpt-5.4-nano")
+            self.assertEqual(loaded.pro_active_preset, "Technical / Engineering")
             self.assertTrue(loaded.store_api_key)
 
     def test_api_key_never_in_settings_json(self):

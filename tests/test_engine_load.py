@@ -251,7 +251,7 @@ class TestPyInstallerSpecDependencies(unittest.TestCase):
     def test_required_packages_not_in_excludes(self):
         """av and tokenizers must not appear in the excludes= section."""
         in_excludes = False
-        forbidden = {"'av',", "'tokenizers',"}
+        forbidden = {"'av',", "'tokenizers',", "'huggingface_hub',"}
         for line in self.spec_content.splitlines():
             stripped = line.strip()
             if "excludes=" in stripped or "excludes =" in stripped:
@@ -277,25 +277,28 @@ class TestPyInstallerSpecDependencies(unittest.TestCase):
 
 
 class TestCanaryTorchGuard(unittest.TestCase):
-    """Canary engine must not register or load when torch is missing."""
+    """Canary engine must not register or load when torch/nemo is missing."""
 
     def test_registry_excludes_canary_when_torch_missing(self):
-        """ENGINES must not contain 'canary' when torch is not installed."""
+        """ENGINES must not contain 'canary' when torch is not installed.
+
+        In a non-frozen (source) environment the registry uses
+        ``import torch`` to verify torch is genuinely loadable.
+        """
+        import builtins
         import importlib
         import cv2t.engine as engine_mod
 
         original_engines = dict(engine_mod.ENGINES)
+        _real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "torch":
+                raise ImportError("torch blocked by test")
+            return _real_import(name, *args, **kwargs)
+
         try:
-            def _fake_find_spec(name, *a, **kw):
-                if name == "torch":
-                    return None
-                return _real_find_spec(name, *a, **kw)
-
-            import importlib.util
-            _real_find_spec = importlib.util.find_spec
-
-            with patch.object(importlib.util, "find_spec", side_effect=_fake_find_spec):
-                # Clear and re-execute the registration logic
+            with patch.object(builtins, "__import__", side_effect=_fake_import):
                 engine_mod.ENGINES.clear()
                 importlib.reload(engine_mod)
                 self.assertNotIn(
@@ -304,7 +307,34 @@ class TestCanaryTorchGuard(unittest.TestCase):
                     "Canary must not register when torch is unavailable",
                 )
         finally:
-            # Restore original registry so other tests aren't affected
+            engine_mod.ENGINES.clear()
+            engine_mod.ENGINES.update(original_engines)
+
+    def test_frozen_build_never_registers_native_canary(self):
+        """In a frozen build, native canary is impossible — only bridge.
+
+        ``cv2t.spec`` excludes torch/NeMo, so the registry must skip the
+        ``import torch`` path entirely and only check the subprocess bridge.
+        """
+        import importlib
+        import cv2t.engine as engine_mod
+
+        original_engines = dict(engine_mod.ENGINES)
+        try:
+            with patch.object(engine_mod.sys, "frozen", True, create=True):
+                # Also ensure bridge reports unavailable
+                with patch(
+                    "cv2t.engine.canary_bridge.canary_env_available",
+                    return_value=False,
+                ):
+                    engine_mod.ENGINES.clear()
+                    importlib.reload(engine_mod)
+                    self.assertNotIn(
+                        "canary",
+                        engine_mod.ENGINES,
+                        "Frozen build must not register native canary",
+                    )
+        finally:
             engine_mod.ENGINES.clear()
             engine_mod.ENGINES.update(original_engines)
 

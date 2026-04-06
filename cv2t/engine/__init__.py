@@ -4,33 +4,52 @@ Engine registry — lazy-loads available engines based on installed dependencies
 
 from __future__ import annotations
 
-import importlib.util
 import logging
+import sys
 from typing import Dict, Type
 
 log = logging.getLogger(__name__)
 
 ENGINES: Dict[str, Type] = {}
 
-# Canary — requires NeMo + torch (direct import for source installs)
-try:
-    from .canary import CanaryEngine
-    if importlib.util.find_spec("torch") is not None:
-        ENGINES["canary"] = CanaryEngine
-    else:
-        log.debug("Canary engine: module importable but torch not installed")
-        raise ImportError("torch not installed")
-except ImportError:
-    # Canary subprocess bridge — for binary installs with canary-env
+# ── Canary ───────────────────────────────────────────────────────────────────
+#
+# In a frozen (PyInstaller) build torch/NeMo are *excluded* by cv2t.spec, so
+# native Canary is never available — only the subprocess bridge can provide it.
+#
+# In a source install we attempt ``import torch`` to verify torch is genuinely
+# loadable.  ``importlib.util.find_spec`` is NOT used anywhere because it is
+# unreliable inside frozen builds: it can discover packages from the *system*
+# Python even when they are listed in the spec's ``excludes``.
+
+if getattr(sys, "frozen", False):
+    # ── Frozen binary: only the subprocess bridge is possible ────────────
     try:
         from .canary_bridge import CanaryBridgeEngine, canary_env_available
         if canary_env_available():
             ENGINES["canary"] = CanaryBridgeEngine
             log.debug("Canary engine available via subprocess bridge (canary-env)")
         else:
-            log.debug("Canary engine unavailable (NeMo/torch not installed, no canary-env)")
+            log.debug("Canary bridge: canary-env not found")
     except ImportError:
-        log.debug("Canary engine unavailable (NeMo/torch not installed)")
+        log.debug("Canary bridge: canary_bridge module not importable")
+else:
+    # ── Source install: try native torch first, then bridge ──────────────
+    try:
+        import torch as _torch  # noqa: F401 — fails fast without torch
+        del _torch
+        from .canary import CanaryEngine
+        ENGINES["canary"] = CanaryEngine
+    except ImportError:
+        try:
+            from .canary_bridge import CanaryBridgeEngine, canary_env_available
+            if canary_env_available():
+                ENGINES["canary"] = CanaryBridgeEngine
+                log.debug("Canary engine available via subprocess bridge (canary-env)")
+            else:
+                log.debug("Canary engine unavailable (no torch, no canary-env)")
+        except ImportError:
+            log.debug("Canary engine unavailable (no torch, bridge not importable)")
 
 # Whisper — requires faster-whisper (CTranslate2)
 try:

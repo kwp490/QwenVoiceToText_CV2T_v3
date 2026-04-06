@@ -32,12 +32,6 @@ from PySide6.QtWidgets import (
 from .audio import AudioRecorder
 from .config import Settings
 from .engine import ENGINES, get_available_engines
-from .text_processor import (
-    TextProcessor,
-    delete_api_key_from_keyring,
-    load_api_key_from_keyring,
-    save_api_key_to_keyring,
-)
 
 log = logging.getLogger(__name__)
 
@@ -52,11 +46,9 @@ class SettingsDialog(QDialog):
         self,
         settings: Settings,
         parent: Optional[QWidget] = None,
-        api_key: str = "",
     ):
         super().__init__(parent)
         self.settings = settings
-        self._api_key = api_key
         self.setWindowTitle("Settings")
         self.setMinimumWidth(500)
         self._build_ui()
@@ -94,6 +86,18 @@ class SettingsDialog(QDialog):
         )
         self._btn_install_canary.clicked.connect(self._on_install_canary)
         canary_row.addWidget(self._btn_install_canary)
+
+        self._btn_validate_canary = QPushButton("Validate Canary Setup")
+        self._btn_validate_canary.setToolTip(
+            "Check that the canary-env Python, all dependencies,\n"
+            "CUDA support, and model files are correctly installed."
+        )
+        self._btn_validate_canary.clicked.connect(self._on_validate_canary)
+        canary_row.addWidget(self._btn_validate_canary)
+
+        self._lbl_canary_validate = QLabel("")
+        canary_row.addWidget(self._lbl_canary_validate)
+
         canary_row.addStretch()
         engine_form.addRow("Canary engine:", canary_row)
         self._update_canary_status()
@@ -186,72 +190,6 @@ class SettingsDialog(QDialog):
         ux_group.setLayout(ux_form)
         layout.addWidget(ux_group)
 
-        # ── Professional Mode group ──────────────────────────────────────────
-        pro_group = QGroupBox("Professional Mode")
-        pro_form = QFormLayout()
-
-        self._pro_enabled = QCheckBox("Enable Professional Mode")
-        pro_form.addRow(self._pro_enabled)
-
-        self._pro_model = QComboBox()
-        self._pro_model.setEditable(True)
-        self._pro_model.addItems(["gpt-5.4-mini", "gpt-5.4-nano"])
-        pro_form.addRow("Model:", self._pro_model)
-
-        # API key row: password field + eye toggle
-        key_row = QHBoxLayout()
-        self._pro_api_key = QLineEdit()
-        self._pro_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._pro_api_key.setPlaceholderText("sk-…")
-        key_row.addWidget(self._pro_api_key)
-
-        self._btn_eye = QPushButton("\U0001f441")
-        self._btn_eye.setFixedWidth(32)
-        self._btn_eye.setCheckable(True)
-        self._btn_eye.setToolTip("Show / hide API key")
-        self._btn_eye.toggled.connect(self._toggle_key_visibility)
-        key_row.addWidget(self._btn_eye)
-        pro_form.addRow("API key:", key_row)
-
-        self._pro_store_key = QCheckBox("Remember API key (Windows Credential Manager)")
-        pro_form.addRow(self._pro_store_key)
-
-        # Validate button + inline result label
-        validate_row = QHBoxLayout()
-        self._btn_validate_key = QPushButton("Validate API Key")
-        self._btn_validate_key.clicked.connect(self._on_validate_api_key)
-        validate_row.addWidget(self._btn_validate_key)
-        self._lbl_validate_result = QLabel("")
-        validate_row.addWidget(self._lbl_validate_result)
-        validate_row.addStretch()
-        pro_form.addRow(validate_row)
-
-        # Cleanup sub-options
-        self._pro_fix_tone = QCheckBox("Fix tone (rewrite unprofessional language)")
-        pro_form.addRow(self._pro_fix_tone)
-
-        self._pro_fix_grammar = QCheckBox("Fix grammar")
-        pro_form.addRow(self._pro_fix_grammar)
-
-        self._pro_fix_punctuation = QCheckBox("Fix punctuation && capitalization")
-        pro_form.addRow(self._pro_fix_punctuation)
-
-        pro_group.setLayout(pro_form)
-        layout.addWidget(pro_group)
-
-        # Wire master toggle to enable/disable sub-widgets
-        self._pro_sub_widgets = [
-            self._pro_model,
-            self._pro_api_key,
-            self._btn_eye,
-            self._pro_store_key,
-            self._btn_validate_key,
-            self._pro_fix_tone,
-            self._pro_fix_grammar,
-            self._pro_fix_punctuation,
-        ]
-        self._pro_enabled.toggled.connect(self._on_pro_toggled)
-
         # ── Button box ───────────────────────────────────────────────────────
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -292,29 +230,6 @@ class SettingsDialog(QDialog):
         # Apply engine-specific device constraints
         self._on_engine_changed(self._engine_combo.currentText())
 
-        # Professional Mode
-        self._pro_enabled.setChecked(s.professional_mode)
-        idx = self._pro_model.findText(s.pro_model)
-        if idx >= 0:
-            self._pro_model.setCurrentIndex(idx)
-        else:
-            self._pro_model.setCurrentText(s.pro_model)
-        self._pro_store_key.setChecked(s.store_api_key)
-        self._pro_fix_tone.setChecked(s.pro_fix_tone)
-        self._pro_fix_grammar.setChecked(s.pro_fix_grammar)
-        self._pro_fix_punctuation.setChecked(s.pro_fix_punctuation)
-
-        # Load API key: from caller (in-memory) or keyring (if stored)
-        if self._api_key:
-            self._pro_api_key.setText(self._api_key)
-        elif s.store_api_key:
-            stored = load_api_key_from_keyring()
-            if stored:
-                self._pro_api_key.setText(stored)
-
-        # Apply master toggle state to sub-widgets
-        self._on_pro_toggled(s.professional_mode)
-
     def _save_and_accept(self) -> None:
         s = self.settings
         s.engine = self._engine_combo.currentText()
@@ -333,21 +248,6 @@ class SettingsDialog(QDialog):
         s.hotkey_quit = self._hotkey_quit.text().strip() or "ctrl+alt+q"
         s.clear_logs_on_exit = self._clear_logs_on_exit.isChecked()
         s.mic_device_index = self._mic_combo.currentData()
-
-        # Professional Mode settings (API key is NEVER saved to settings JSON)
-        s.professional_mode = self._pro_enabled.isChecked()
-        s.pro_model = self._pro_model.currentText().strip() or "gpt-5.4-mini"
-        s.pro_fix_tone = self._pro_fix_tone.isChecked()
-        s.pro_fix_grammar = self._pro_fix_grammar.isChecked()
-        s.pro_fix_punctuation = self._pro_fix_punctuation.isChecked()
-        s.store_api_key = self._pro_store_key.isChecked()
-
-        # API key: persist to keyring or delete, expose via property
-        self._api_key = self._pro_api_key.text().strip()
-        if s.store_api_key and self._api_key:
-            save_api_key_to_keyring(self._api_key)
-        elif not s.store_api_key:
-            delete_api_key_from_keyring()
 
         s.save()
         log.info("Settings saved")
@@ -376,39 +276,44 @@ class SettingsDialog(QDialog):
         if path:
             self._model_path.setText(path)
 
-    # ── Professional Mode helpers ────────────────────────────────────────────
-
     # ── Canary add-on helpers ───────────────────────────────────────────────
 
     def _update_canary_status(self) -> None:
-        """Refresh the Canary status label and install button state."""
-        # Check if canary is available via direct import (source install)
-        if "canary" in ENGINES:
-            try:
-                from cv2t.engine.canary import CanaryEngine
-                self._canary_status_label.setText("\u2705 Installed (native)")
-                self._canary_status_label.setStyleSheet("color: #2e7d32;")
-                self._btn_install_canary.setVisible(False)
-                return
-            except ImportError:
-                pass
+        """Refresh the Canary status label and install/validate button state."""
+        installed = False
 
-            # Check if canary is available via subprocess bridge
+        # Check the ENGINES registry (populated once at import time via real
+        # ``import torch``, which is reliable in both source and frozen builds).
+        if "canary" in ENGINES:
+            if "canary_bridge" in ENGINES["canary"].__module__:
+                self._canary_status_label.setText("\u2705 Installed (canary-env)")
+            else:
+                self._canary_status_label.setText("\u2705 Installed (native)")
+            self._canary_status_label.setStyleSheet("color: #2e7d32;")
+            installed = True
+        else:
+            # Canary-env may have been installed after app startup — check live.
             try:
                 from cv2t.engine.canary_bridge import canary_env_available
                 if canary_env_available():
-                    self._canary_status_label.setText("\u2705 Installed (canary-env)")
+                    self._canary_status_label.setText(
+                        "\u2705 Installed (canary-env) \u2014 restart to activate")
                     self._canary_status_label.setStyleSheet("color: #2e7d32;")
-                    self._btn_install_canary.setVisible(False)
-                    return
+                    installed = True
             except ImportError:
                 pass
 
-        self._canary_status_label.setText("Not installed")
-        self._canary_status_label.setStyleSheet("color: #757575;")
-        self._btn_install_canary.setVisible(True)
+        if installed:
+            self._btn_install_canary.setVisible(False)
+            self._btn_validate_canary.setVisible(True)
+        else:
+            self._canary_status_label.setText("Not installed")
+            self._canary_status_label.setStyleSheet("color: #757575;")
+            self._btn_install_canary.setVisible(True)
+            self._btn_validate_canary.setVisible(False)
+            self._lbl_canary_validate.setText("")
 
-    def _on_install_canary(self) -> None:
+    def _on_install_canary(self, *, skip_confirm: bool = False) -> None:
         """Launch Enable-Canary.ps1 in an elevated terminal."""
         import os
         import subprocess
@@ -417,10 +322,16 @@ class SettingsDialog(QDialog):
         # Find Enable-Canary.ps1
         if getattr(sys, "frozen", False):
             app_dir = os.path.dirname(sys.executable)
+            # PyInstaller 6+ places data files in _internal/ (sys._MEIPASS)
+            data_dir = getattr(sys, "_MEIPASS", app_dir)
         else:
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            data_dir = app_dir
 
         script_path = os.path.join(app_dir, "Enable-Canary.ps1")
+        if not os.path.isfile(script_path):
+            # PyInstaller 6+ _internal/ directory
+            script_path = os.path.join(data_dir, "Enable-Canary.ps1")
         if not os.path.isfile(script_path):
             # Check installer directory (dev/source layout)
             script_path = os.path.join(app_dir, "installer", "Enable-Canary.ps1")
@@ -436,32 +347,48 @@ class SettingsDialog(QDialog):
             )
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Install Canary Engine",
-            "This will install PyTorch + NVIDIA NeMo (~10 GB disk space).\n\n"
-            "A PowerShell window will open with Administrator privileges.\n"
-            "The installation may take 10-20 minutes.\n\n"
-            "Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+        if not skip_confirm:
+            reply = QMessageBox.question(
+                self,
+                "Install Canary Engine",
+                "This will install PyTorch + NVIDIA NeMo (~10 GB disk space).\n\n"
+                "A PowerShell window will open with Administrator privileges.\n"
+                "The installation may take 10-20 minutes.\n\n"
+                "Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         try:
-            # Launch elevated PowerShell with the Enable-Canary script
-            cmd = (
-                f'Set-ExecutionPolicy Bypass -Scope Process -Force; '
-                f'& "{script_path}"'
+            # Launch elevated PowerShell with the Enable-Canary script.
+            #
+            # Quoting chain: Python → outer powershell → Start-Process → inner
+            # powershell.  We use single-quotes inside the inner command so
+            # paths with spaces (e.g. "C:\Program Files\CV2T") survive intact.
+            # In PowerShell, single-quotes are escaped by doubling them ('').
+            #
+            # The outer -ArgumentList is one string using `\"…\"` so that the
+            # inner single-quotes are preserved through Start-Process.
+            esc_script = script_path.replace("'", "''")
+            esc_app = app_dir.replace("'", "''")
+            inner_cmd = (
+                "Set-ExecutionPolicy Bypass -Scope Process -Force; "
+                f"& '{esc_script}' -AppDir '{esc_app}'"
+            )
+            # Wrap for Start-Process: escape inner double-quotes for the
+            # outer PowerShell layer, pass the command via -ArgumentList.
+            outer_cmd = (
+                'Start-Process powershell.exe '
+                '-ArgumentList @('
+                "'-NoProfile',"
+                "'-Command',"
+                f"'{inner_cmd.replace(chr(39), chr(39)*2)}'"
+                ') -Verb RunAs'
             )
             subprocess.Popen(
-                [
-                    "powershell.exe", "-Command",
-                    f'Start-Process powershell.exe '
-                    f'-ArgumentList \'-NoExit\',\'-Command\',\'{cmd}\' '
-                    f'-Verb RunAs',
-                ],
+                ["powershell.exe", "-NoProfile", "-Command", outer_cmd],
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             QMessageBox.information(
@@ -478,61 +405,194 @@ class SettingsDialog(QDialog):
                 f"Failed to start the Canary installer:\n{exc}",
             )
 
-    # ── Professional Mode helpers ────────────────────────────────────────────
+    # ── Canary validation helpers ─────────────────────────────────────────
 
-    def _on_pro_toggled(self, enabled: bool) -> None:
-        """Enable or disable all Professional Mode sub-widgets."""
-        for w in self._pro_sub_widgets:
-            w.setEnabled(enabled)
+    def _on_validate_canary(self) -> None:
+        """Run canary-env dependency checks on a background thread."""
+        self._btn_validate_canary.setEnabled(False)
+        self._lbl_canary_validate.setText("Validating\u2026")
+        self._lbl_canary_validate.setStyleSheet("color: #757575;")
 
-    def _toggle_key_visibility(self, show: bool) -> None:
-        if show:
-            self._pro_api_key.setEchoMode(QLineEdit.EchoMode.Normal)
-        else:
-            self._pro_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-
-    def _on_validate_api_key(self) -> None:
-        key = self._pro_api_key.text().strip()
-        if not key:
-            self._lbl_validate_result.setText("\u274c No API key entered")
-            self._lbl_validate_result.setStyleSheet("color: #c62828;")
-            return
-
-        self._lbl_validate_result.setText("Validating…")
-        self._lbl_validate_result.setStyleSheet("color: #757575;")
-        self._btn_validate_key.setEnabled(False)
-
-        model = self._pro_model.currentText()
-
-        def _do_validate():
-            processor = TextProcessor(api_key=key, model=model)
-            return processor.validate_key()
+        model_path = self._model_path.text().strip() or self.settings.model_path
 
         from PySide6.QtCore import QThreadPool
 
         from .workers import Worker
 
-        worker = Worker(_do_validate)
-        worker.signals.result.connect(self._on_validate_result)
-        worker.signals.error.connect(self._on_validate_error)
+        worker = Worker(self._do_canary_validation, model_path)
+        worker.signals.result.connect(self._on_canary_validate_result)
+        worker.signals.error.connect(self._on_canary_validate_error)
         QThreadPool.globalInstance().start(worker)
 
-    def _on_validate_result(self, result: tuple) -> None:
-        self._btn_validate_key.setEnabled(True)
-        ok, msg = result
-        if ok:
-            self._lbl_validate_result.setText(f"\u2705 {msg}")
-            self._lbl_validate_result.setStyleSheet("color: #2e7d32;")
+    @staticmethod
+    def _do_canary_validation(model_path: str) -> list[tuple[str, bool, str]]:
+        """Check canary-env, dependencies, CUDA, and model files.
+
+        Runs in a worker thread.  Each check is a ``(name, passed, detail)``
+        tuple so the UI can display a structured report.
+        """
+        import os
+        import subprocess
+        import sys
+
+        results: list[tuple[str, bool, str]] = []
+
+        # ── 1. Locate canary-env Python ──────────────────────────────────
+        if getattr(sys, "frozen", False):
+            app_dir = os.path.dirname(sys.executable)
         else:
-            self._lbl_validate_result.setText(f"\u274c {msg}")
-            self._lbl_validate_result.setStyleSheet("color: #c62828;")
+            app_dir = os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))
+            )
 
-    def _on_validate_error(self, err: str) -> None:
-        self._btn_validate_key.setEnabled(True)
-        self._lbl_validate_result.setText(f"\u274c {err}")
-        self._lbl_validate_result.setStyleSheet("color: #c62828;")
+        python_path = os.path.join(
+            app_dir, "canary-env", ".venv", "Scripts", "python.exe",
+        )
+        if os.path.isfile(python_path):
+            results.append(("canary-env Python", True, python_path))
+        else:
+            results.append((
+                "canary-env Python", False,
+                f"Not found: {python_path}",
+            ))
+            # Cannot run further subprocess checks without the interpreter.
+            return results
 
-    @property
-    def api_key(self) -> str:
-        """Return the API key entered by the user (in-memory only)."""
-        return self._api_key
+        # ── 2. Dependency imports + CUDA check (subprocess) ──────────────
+        # The canary-env packages (NeMo, torch, transformers, etc.) may
+        # print warnings or banners to stdout during import.  Redirect
+        # stdout to stderr *before* any imports so only the final JSON
+        # line appears on stdout.
+        dep_script = (
+            "import sys, json, os, io\n"
+            "_real_stdout = sys.stdout\n"
+            "sys.stdout = sys.stderr\n"
+            "os.environ['TORCHDYNAMO_DISABLE'] = '1'\n"
+            "results = []\n"
+            "for mod in ('numpy', 'soundfile', 'torch', 'accelerate',\n"
+            "            'huggingface_hub', 'onnxruntime',\n"
+            "            'transformers', 'sentencepiece', 'omegaconf',\n"
+            "            'lightning', 'peft'):\n"
+            "    try:\n"
+            "        __import__(mod)\n"
+            "        results.append((mod, True, 'OK'))\n"
+            "    except ImportError as e:\n"
+            "        results.append((mod, False, str(e)))\n"
+            "try:\n"
+            "    from nemo.collections.speechlm2.models import SALM\n"
+            "    results.append(('nemo SALM', True, 'OK'))\n"
+            "except ImportError as e:\n"
+            "    results.append(('nemo SALM', False, str(e)))\n"
+            "try:\n"
+            "    import torch\n"
+            "    cuda_ok = torch.cuda.is_available()\n"
+            "    results.append(('CUDA', cuda_ok,\n"
+            "        'available' if cuda_ok else 'torch.cuda.is_available() returned False'))\n"
+            "except Exception as e:\n"
+            "    results.append(('CUDA', False, str(e)))\n"
+            "_real_stdout.write(json.dumps(results) + '\\n')\n"
+            "_real_stdout.flush()\n"
+        )
+
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        try:
+            proc = subprocess.run(
+                [python_path, "-c", dep_script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                creationflags=creationflags,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                import json
+                dep_results = json.loads(proc.stdout.strip())
+                results.extend(
+                    (name, ok, detail) for name, ok, detail in dep_results
+                )
+            else:
+                stderr_preview = (proc.stderr or "").strip()[:300]
+                results.append((
+                    "Dependency check", False,
+                    f"Subprocess failed (exit {proc.returncode}): {stderr_preview}",
+                ))
+        except subprocess.TimeoutExpired:
+            results.append(("Dependency check", False, "Timed out after 120 s"))
+        except Exception as exc:
+            results.append(("Dependency check", False, str(exc)))
+
+        # ── 3. Model files ───────────────────────────────────────────────
+        canary_dir = os.path.join(model_path, "canary")
+        config_path = os.path.join(canary_dir, "config.json")
+        safetensors_path = os.path.join(canary_dir, "model.safetensors")
+
+        if os.path.isfile(config_path):
+            results.append(("Model config.json", True, config_path))
+        else:
+            results.append(("Model config.json", False, f"Missing: {config_path}"))
+
+        if os.path.isfile(safetensors_path):
+            size_bytes = os.path.getsize(safetensors_path)
+            if size_bytes >= 1_000_000_000:  # ~1 GB
+                size_gb = round(size_bytes / (1024 ** 3), 1)
+                results.append((
+                    "Model weights", True,
+                    f"{safetensors_path} ({size_gb} GB)",
+                ))
+            else:
+                size_mb = round(size_bytes / (1024 ** 2))
+                results.append((
+                    "Model weights", False,
+                    f"File too small ({size_mb} MB) — likely truncated",
+                ))
+        else:
+            results.append((
+                "Model weights", False,
+                f"Missing: {safetensors_path}",
+            ))
+
+        return results
+
+    def _on_canary_validate_result(self, results: list) -> None:
+        """Handle canary validation results from the worker thread."""
+        self._btn_validate_canary.setEnabled(True)
+
+        failures = [(name, detail) for name, ok, detail in results if not ok]
+
+        if not failures:
+            self._lbl_canary_validate.setText("\u2705 All checks passed")
+            self._lbl_canary_validate.setStyleSheet("color: #2e7d32;")
+            return
+
+        # Show inline summary
+        self._lbl_canary_validate.setText(
+            f"\u274c {len(failures)} check(s) failed"
+        )
+        self._lbl_canary_validate.setStyleSheet("color: #c62828;")
+
+        # Build detailed report
+        lines = []
+        for name, ok, detail in results:
+            icon = "\u2705" if ok else "\u274c"
+            lines.append(f"{icon}  {name}: {detail}")
+        report = "\n".join(lines)
+
+        reply = QMessageBox.question(
+            self,
+            "Canary Validation Results",
+            f"{report}\n\n"
+            f"{len(failures)} check(s) failed.\n\n"
+            "Launch Enable-Canary.ps1 to repair the installation?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._on_install_canary(skip_confirm=True)
+
+    def _on_canary_validate_error(self, err: str) -> None:
+        """Handle unexpected errors from the canary validation worker."""
+        self._btn_validate_canary.setEnabled(True)
+        self._lbl_canary_validate.setText(f"\u274c {err}")
+        self._lbl_canary_validate.setStyleSheet("color: #c62828;")

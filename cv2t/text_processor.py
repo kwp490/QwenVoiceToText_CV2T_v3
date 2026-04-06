@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from openai import AuthenticationError, OpenAI, OpenAIError
+
+if TYPE_CHECKING:
+    from .pro_preset import ProPreset
 
 log = logging.getLogger(__name__)
 
@@ -32,33 +35,67 @@ def _sanitize_error(exc: BaseException, api_key: str) -> str:
 
 
 def _build_system_prompt(
-    fix_tone: bool, fix_grammar: bool, fix_punctuation: bool
+    fix_tone: bool,
+    fix_grammar: bool,
+    fix_punctuation: bool,
+    *,
+    custom_prompt: str = "",
+    vocabulary: str = "",
 ) -> str:
-    """Build the system prompt from the enabled cleanup flags."""
+    """Build the system prompt from the enabled cleanup flags.
+
+    When *custom_prompt* is supplied (from a preset), it replaces the
+    default tone instruction.  *vocabulary* is a comma/newline-separated
+    list of terms that the model must preserve verbatim.
+    """
     rules: list[str] = []
     if fix_tone:
-        rules.append(
-            "Make the tone professional and neutral. Remove emotional, "
-            "aggressive, or unprofessional language while preserving the "
-            "original meaning and intent."
-        )
+        if custom_prompt and custom_prompt.strip():
+            rules.append(custom_prompt.strip())
+        else:
+            rules.append(
+                "Make the tone professional and neutral. Remove emotional, "
+                "aggressive, or unprofessional language while preserving the "
+                "original meaning and intent."
+            )
+    elif custom_prompt and custom_prompt.strip():
+        # Custom prompt provided but fix_tone is off — still include it
+        # as a general instruction.
+        rules.append(custom_prompt.strip())
+
     if fix_grammar:
         rules.append("Fix grammar errors.")
     if fix_punctuation:
         rules.append("Add proper punctuation and capitalization.")
 
     if not rules:
-        # All flags off — nothing to do; caller should skip the API call.
+        # All flags off and no custom prompt — nothing to do.
         return ""
 
     numbered = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, 1))
-    return (
+    prompt = (
         "You are a text cleanup assistant. Rewrite the following dictated "
         "text with these corrections:\n"
         f"{numbered}\n\n"
         "Preserve the original meaning and intent. "
         "Output only the corrected text, nothing else."
     )
+
+    # Vocabulary preservation
+    if vocabulary and vocabulary.strip():
+        # Parse comma/newline-separated terms
+        terms = [
+            t.strip()
+            for t in re.split(r"[,\n]+", vocabulary)
+            if t.strip()
+        ]
+        if terms:
+            term_list = ", ".join(terms)
+            prompt += (
+                f"\n\nPreserve these terms exactly as written: {term_list}"
+            )
+
+    return prompt
 
 
 class TextProcessor:
@@ -89,8 +126,12 @@ class TextProcessor:
         fix_tone: bool = True,
         fix_grammar: bool = True,
         fix_punctuation: bool = True,
+        preset: ProPreset | None = None,
     ) -> str:
-        """Clean up *text* according to the enabled flags.
+        """Clean up *text* according to the enabled flags or *preset*.
+
+        If a *preset* is supplied its fields take priority over the
+        individual flag arguments.
 
         Returns the cleaned text on success, or the original *text*
         unchanged on any API failure (graceful degradation).
@@ -98,7 +139,24 @@ class TextProcessor:
         if not text or not text.strip():
             return text
 
-        system_prompt = _build_system_prompt(fix_tone, fix_grammar, fix_punctuation)
+        # Resolve effective parameters from preset or kwargs
+        if preset is not None:
+            fix_tone = preset.fix_tone
+            fix_grammar = preset.fix_grammar
+            fix_punctuation = preset.fix_punctuation
+            custom_prompt = preset.system_prompt
+            vocabulary = preset.vocabulary
+            model = preset.model or self._model
+        else:
+            custom_prompt = ""
+            vocabulary = ""
+            model = self._model
+
+        system_prompt = _build_system_prompt(
+            fix_tone, fix_grammar, fix_punctuation,
+            custom_prompt=custom_prompt,
+            vocabulary=vocabulary,
+        )
         if not system_prompt:
             # All cleanup flags are disabled — pass through unchanged.
             return text
@@ -110,7 +168,7 @@ class TextProcessor:
 
         try:
             response = self._client.chat.completions.create(
-                model=self._model,
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
