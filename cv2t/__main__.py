@@ -74,20 +74,28 @@ def _setup_logging() -> None:
 
     # Use a UTF-8 stream for the console handler so Unicode characters
     # don't crash on Windows cp1252 consoles.
-    _console_stream = open(
-        sys.stdout.fileno(), mode="w", encoding="utf-8",
-        errors="replace", closefd=False,
-    )
+    # In PyInstaller --noconsole builds sys.stdout has no real fd.
+    try:
+        _console_stream = open(
+            sys.stdout.fileno(), mode="w", encoding="utf-8",
+            errors="replace", closefd=False,
+        )
+    except (io.UnsupportedOperation, OSError):
+        _console_stream = None
+
+    handlers = [
+        logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
+        ),
+    ]
+    if _console_stream is not None:
+        handlers.append(logging.StreamHandler(_console_stream))
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.handlers.RotatingFileHandler(
-                log_path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
-            ),
-            logging.StreamHandler(_console_stream),
-        ],
+        handlers=handlers,
     )
     logging.getLogger("cv2t").info("=== CV2T starting (log: %s) ===", log_path)
 
