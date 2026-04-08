@@ -72,6 +72,12 @@ def _setup_logging() -> None:
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "cv2t.log")
 
+    # Use a UTF-8 stream for the console handler so Unicode characters
+    # don't crash on Windows cp1252 consoles.
+    _console_stream = open(
+        sys.stdout.fileno(), mode="w", encoding="utf-8",
+        errors="replace", closefd=False,
+    )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s",
@@ -80,7 +86,7 @@ def _setup_logging() -> None:
             logging.handlers.RotatingFileHandler(
                 log_path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
             ),
-            logging.StreamHandler(sys.stdout),
+            logging.StreamHandler(_console_stream),
         ],
     )
     logging.getLogger("cv2t").info("=== CV2T starting (log: %s) ===", log_path)
@@ -152,7 +158,7 @@ def _download_canary(target_dir: str) -> int:
         hf_hub = importlib.import_module("huggingface_hub")
     except ImportError:
         print("ERROR: Canary model download requires huggingface-hub.")
-        print("Install Canary via Settings \u2192 Install Canary Engine,")
+        print("Install Canary via Settings -> Install Canary Engine,")
         print("or run: pip install huggingface-hub")
         return 1
     print(f"Downloading Canary model from nvidia/canary-qwen-2.5b to {target_dir}...")

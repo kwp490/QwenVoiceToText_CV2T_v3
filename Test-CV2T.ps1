@@ -19,10 +19,15 @@
 .PARAMETER Mode
     Skip the interactive menu.  Valid values: Release, Source.
 
+.PARAMETER SkipTests
+    Skip the pytest test suite (Phase 2).  Useful when iterating on
+    non-test changes and you want a faster launch cycle.
+
 .EXAMPLE
     .\Test-CV2T.ps1                 # interactive menu
     .\Test-CV2T.ps1 -Mode Source    # skip menu, run from source
     .\Test-CV2T.ps1 -Mode Release   # skip menu, full release cycle
+    .\Test-CV2T.ps1 -Mode Source -SkipTests   # skip tests, run from source
 
 .NOTES
     Run from the repository root.
@@ -31,7 +36,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Release', 'Source')]
-    [string]$Mode
+    [string]$Mode,
+
+    [switch]$SkipTests
 )
 
 Set-StrictMode -Version Latest
@@ -126,28 +133,32 @@ Write-Ok "Dependencies synced (whisper + canary + dev)"
 #  PHASE 2 -- Run test suite (shared)
 # ==============================================================================
 
-Write-Step "Running test suite (uv run pytest tests/ -v)..."
-$prevPref = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    uv run pytest tests/ -v 2>&1 | ForEach-Object { Write-Host "  $_" }
-} finally {
-    $ErrorActionPreference = $prevPref
-}
-
-$testExit = $LASTEXITCODE
-if ($testExit -ne 0) {
-    Write-Host ""
-    Write-Warn "Test suite failed (exit code $testExit)."
-    Write-Host ""
-    $continue = Read-Host "  Continue anyway? (y/N)"
-    if ($continue -notin 'y', 'Y') {
-        Write-Host "  Aborted." -ForegroundColor Red
-        Exit-Script 1
-    }
-    Write-Warn "Continuing despite test failures."
+if ($SkipTests) {
+    Write-Warn "Test suite skipped (-SkipTests)"
 } else {
-    Write-Ok "All tests passed"
+    Write-Step "Running test suite (uv run pytest tests/ -v)..."
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        uv run pytest tests/ -v 2>&1 | ForEach-Object { Write-Host "  $_" }
+    } finally {
+        $ErrorActionPreference = $prevPref
+    }
+
+    $testExit = $LASTEXITCODE
+    if ($testExit -ne 0) {
+        Write-Host ""
+        Write-Warn "Test suite failed (exit code $testExit)."
+        Write-Host ""
+        $continue = Read-Host "  Continue anyway? (y/N)"
+        if ($continue -notin 'y', 'Y') {
+            Write-Host "  Aborted." -ForegroundColor Red
+            Exit-Script 1
+        }
+        Write-Warn "Continuing despite test failures."
+    } else {
+        Write-Ok "All tests passed"
+    }
 }
 
 
@@ -165,12 +176,14 @@ if ($Mode -eq 'Release') {
     if (-not $isAdmin) {
         Write-Warn "Release mode requires admin privileges. Elevating..."
         $scriptPath = $MyInvocation.MyCommand.Path
+        $elevateArgs = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', "`"$scriptPath`"",
+            '-Mode', 'Release'
+        )
+        if ($SkipTests) { $elevateArgs += '-SkipTests' }
         try {
-            Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                '-File', "`"$scriptPath`"",
-                '-Mode', 'Release'
-            )
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $elevateArgs
         } catch {
             Write-Err "Failed to elevate: $_"
             Exit-Script 1

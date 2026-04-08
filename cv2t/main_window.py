@@ -20,7 +20,6 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -31,7 +30,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -264,6 +262,8 @@ class MainWindow(QMainWindow):
                 api_key=self._api_key,
                 model=self._active_preset.model or "gpt-5.4-mini",
             )
+        elif settings.professional_mode and not self._api_key:
+            log.warning("Professional Mode enabled but no API key configured")
 
         # ── Build UI ─────────────────────────────────────────────────────────
         self.setWindowTitle("CV2T — Voice to Text")
@@ -294,66 +294,29 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setSpacing(8)
 
-        # ── Model Engine panel ───────────────────────────────────────────────
-        engine_group = QGroupBox("Model Engine")
-        eg_layout = QVBoxLayout()
-
-        status_row = QHBoxLayout()
-        self._lbl_engine = QLabel(f"Engine: {self._engine.name}")
-        self._lbl_model_status = QLabel("Status: Not loaded")
-        self._lbl_engine.setFont(QFont("Segoe UI", 10))
-        self._lbl_model_status.setFont(QFont("Segoe UI", 10))
-        status_row.addWidget(self._lbl_engine)
-        status_row.addWidget(self._lbl_model_status)
-        status_row.addStretch()
-        eg_layout.addLayout(status_row)
-
-        # Resource metrics row
-        metrics_row = QHBoxLayout()
-        self._lbl_ram = QLabel("RAM: —")
-        self._lbl_vram = QLabel("VRAM: —")
-        self._lbl_gpu_info = QLabel("GPU: —")
-        self._lbl_ram.setFont(QFont("Segoe UI", 9))
-        self._lbl_vram.setFont(QFont("Segoe UI", 9))
-        self._lbl_gpu_info.setFont(QFont("Segoe UI", 9))
-        metrics_row.addWidget(self._lbl_ram)
-        metrics_row.addWidget(self._lbl_vram)
-        metrics_row.addWidget(self._lbl_gpu_info)
-        metrics_row.addStretch()
-        eg_layout.addLayout(metrics_row)
-
+        # ── Transcription section (dominant) ─────────────────────────────────
         btn_row = QHBoxLayout()
-        self._btn_reload = QPushButton("Reload Model")
-        self._btn_reload.clicked.connect(self._on_reload_model)
-        self._btn_validate = QPushButton("Validate")
-        self._btn_validate.clicked.connect(self._on_validate)
-        btn_row.addWidget(self._btn_reload)
-        btn_row.addWidget(self._btn_validate)
-        btn_row.addStretch()
-        eg_layout.addLayout(btn_row)
-
-        engine_group.setLayout(eg_layout)
-        root.addWidget(engine_group)
-
-        # ── Dictation panel ──────────────────────────────────────────────────
-        dict_group = QGroupBox("Dictation")
-        dg_layout = QVBoxLayout()
-
-        self._lbl_dictation_state = QLabel("State: Idle")
-        self._lbl_dictation_state.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        dg_layout.addWidget(self._lbl_dictation_state)
-
-        btn_row2 = QHBoxLayout()
         self._btn_start = QPushButton("\U0001f3a4  Start Recording  (Ctrl+Alt+P)")
-        self._btn_start.setMinimumHeight(38)
+        self._btn_start.setMinimumHeight(52)
+        self._btn_start.setStyleSheet("font-size: 14px;")
         self._btn_start.clicked.connect(self._on_start_recording)
         self._btn_stop = QPushButton("\u23f9  Stop && Transcribe  (Ctrl+Alt+L)")
-        self._btn_stop.setMinimumHeight(38)
+        self._btn_stop.setMinimumHeight(52)
+        self._btn_stop.setStyleSheet("font-size: 14px;")
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._on_stop_and_transcribe)
-        btn_row2.addWidget(self._btn_start)
-        btn_row2.addWidget(self._btn_stop)
-        dg_layout.addLayout(btn_row2)
+        btn_row.addWidget(self._btn_start)
+        btn_row.addWidget(self._btn_stop)
+        root.addLayout(btn_row)
+
+        # ── Status indicators (model + dictation) ────────────────────────────
+        status_row_top = QHBoxLayout()
+        self._lbl_global_status = QLabel()
+        self._lbl_global_status.setFont(QFont("Segoe UI", 10))
+        status_row_top.addWidget(self._lbl_global_status)
+        status_row_top.addStretch()
+        root.addLayout(status_row_top)
+        self._update_global_status()
 
         toggle_row = QHBoxLayout()
         self._chk_auto_copy = QCheckBox("Auto-copy to clipboard")
@@ -367,14 +330,16 @@ class MainWindow(QMainWindow):
         toggle_row.addWidget(self._chk_auto_paste)
         toggle_row.addWidget(self._chk_hotkeys)
         toggle_row.addStretch()
-        dg_layout.addLayout(toggle_row)
+        root.addLayout(toggle_row)
 
-        dict_group.setLayout(dg_layout)
-        root.addWidget(dict_group)
-
-        # ── History panel ────────────────────────────────────────────────────
-        hist_group = QGroupBox("Transcription History")
-        hg_layout = QVBoxLayout()
+        # History header with contextual Clear button
+        history_header = QHBoxLayout()
+        history_header.addWidget(QLabel("<b>Transcription History</b>"))
+        history_header.addStretch()
+        self._btn_clear_history = QPushButton("\U0001f5d1  Clear History")
+        self._btn_clear_history.clicked.connect(self._on_clear_history)
+        history_header.addWidget(self._btn_clear_history)
+        root.addLayout(history_header)
 
         self._history_widget = QWidget()
         self._history_layout = QVBoxLayout(self._history_widget)
@@ -385,14 +350,75 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._history_widget)
-        scroll.setMinimumHeight(120)
-        hg_layout.addWidget(scroll)
+        scroll.setMinimumHeight(200)
+        root.addWidget(scroll, stretch=1)
 
-        hist_group.setLayout(hg_layout)
+        # ── Collapsible Advanced Diagnostics panel ───────────────────────────
+        self._diag_toggle = QPushButton("\u25b6 Advanced Diagnostics")
+        self._diag_toggle.setFlat(True)
+        self._diag_toggle.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; padding: 4px; }"
+        )
+        self._diag_toggle.clicked.connect(self._toggle_diagnostics)
+        root.addWidget(self._diag_toggle)
 
-        # ── Log panel ────────────────────────────────────────────────────────
+        self._diag_content = QWidget()
+        diag_layout = QVBoxLayout(self._diag_content)
+        diag_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Model Engine panel
+        engine_group = QGroupBox("Model Engine")
+        eg_layout = QVBoxLayout()
+
+        status_row = QHBoxLayout()
+        self._lbl_engine = QLabel(f"Engine: {self._engine.name}")
+        self._lbl_model_status = QLabel("Status: Not loaded")
+        self._lbl_engine.setFont(QFont("Segoe UI", 10))
+        self._lbl_model_status.setFont(QFont("Segoe UI", 10))
+        status_row.addWidget(self._lbl_engine)
+        status_row.addWidget(self._lbl_model_status)
+        status_row.addStretch()
+        eg_layout.addLayout(status_row)
+
+        metrics_row = QHBoxLayout()
+        self._lbl_ram = QLabel("RAM: —")
+        self._lbl_vram = QLabel("VRAM: —")
+        self._lbl_gpu_info = QLabel("GPU: —")
+        self._lbl_ram.setFont(QFont("Segoe UI", 9))
+        self._lbl_vram.setFont(QFont("Segoe UI", 9))
+        self._lbl_gpu_info.setFont(QFont("Segoe UI", 9))
+        metrics_row.addWidget(self._lbl_ram)
+        metrics_row.addWidget(self._lbl_vram)
+        metrics_row.addWidget(self._lbl_gpu_info)
+        metrics_row.addStretch()
+        eg_layout.addLayout(metrics_row)
+
+        btn_row_engine = QHBoxLayout()
+        self._btn_reload = QPushButton("Reload Model")
+        self._btn_reload.clicked.connect(self._on_reload_model)
+        self._btn_validate = QPushButton("Validate")
+        self._btn_validate.clicked.connect(self._on_validate)
+        btn_row_engine.addWidget(self._btn_reload)
+        btn_row_engine.addWidget(self._btn_validate)
+        btn_row_engine.addStretch()
+        eg_layout.addLayout(btn_row_engine)
+
+        engine_group.setLayout(eg_layout)
+
+        # Log panel with contextual buttons in header
         log_group = QGroupBox("Log")
         lg_layout = QVBoxLayout()
+
+        log_header = QHBoxLayout()
+        log_header.addStretch()
+        self._btn_clear_logs = QPushButton("\U0001f5d1  Clear Logs")
+        self._btn_clear_logs.clicked.connect(self._on_clear_logs)
+        self._btn_copy_logs = QPushButton("\U0001f4cb  Copy Logs")
+        self._btn_copy_logs.clicked.connect(self._on_copy_logs)
+        log_header.addWidget(self._btn_clear_logs)
+        log_header.addWidget(self._btn_copy_logs)
+        lg_layout.addLayout(log_header)
+
         self._log_text = QPlainTextEdit()
         self._log_text.setReadOnly(True)
         self._log_text.setMaximumBlockCount(500)
@@ -400,55 +426,81 @@ class MainWindow(QMainWindow):
         lg_layout.addWidget(self._log_text)
         log_group.setLayout(lg_layout)
 
-        # ── Splitter for history + log ───────────────────────────────────────
+        # Splitter for engine + log inside diagnostics
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(hist_group)
+        splitter.addWidget(engine_group)
         splitter.addWidget(log_group)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, stretch=1)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        diag_layout.addWidget(splitter)
+
+        self._diag_content.setVisible(False)
+        root.addWidget(self._diag_content)
 
         # ── Bottom buttons ───────────────────────────────────────────────────
         bottom_row = QHBoxLayout()
         btn_settings = QPushButton("\u2699  Settings")
         btn_settings.clicked.connect(self._on_open_settings)
-
-        # Professional Mode controls
-        _pro_on = self.settings.professional_mode
-        self._btn_pro_toggle = QPushButton("PRO: ON" if _pro_on else "PRO: OFF")
-        self._btn_pro_toggle.setCheckable(True)
-        self._btn_pro_toggle.setChecked(_pro_on)
-        self._btn_pro_toggle.setStyleSheet(self._pro_toggle_style(_pro_on))
-        self._btn_pro_toggle.toggled.connect(self._on_pro_toggle)
-
-        self._combo_preset = QComboBox()
-        self._combo_preset.setMinimumWidth(160)
-        self._refresh_preset_combo()
-        self._combo_preset.currentTextChanged.connect(self._on_preset_combo_changed)
-
-        btn_pro_settings = QPushButton("\u2695  Professional")
+        btn_pro_settings = QPushButton("\u2695  Professional Mode Settings")
         btn_pro_settings.clicked.connect(self._on_open_pro_settings)
-
-        btn_clear = QPushButton("\U0001f5d1  Clear Logs && History")
-        btn_clear.clicked.connect(self._on_clear_logs_and_history)
-        btn_copy_logs = QPushButton("\U0001f4cb  Copy Logs")
-        btn_copy_logs.clicked.connect(self._on_copy_logs)
         btn_quit = QPushButton("Quit")
         btn_quit.clicked.connect(self.close)
         bottom_row.addWidget(btn_settings)
-        bottom_row.addWidget(self._btn_pro_toggle)
-        bottom_row.addWidget(self._combo_preset)
         bottom_row.addWidget(btn_pro_settings)
-        bottom_row.addWidget(btn_clear)
-        bottom_row.addWidget(btn_copy_logs)
         bottom_row.addStretch()
         bottom_row.addWidget(btn_quit)
         root.addLayout(bottom_row)
 
-        # ── Status bar ───────────────────────────────────────────────────────
-        sb = QStatusBar()
-        self.setStatusBar(sb)
-        sb.showMessage("Starting up…")
+
+
+    def _toggle_diagnostics(self) -> None:
+        """Show or hide the Advanced Diagnostics panel."""
+        was_hidden = self._diag_content.isHidden()
+        self._diag_content.setVisible(was_hidden)
+        self._diag_toggle.setText(
+            "\u25bc Advanced Diagnostics" if was_hidden
+            else "\u25b6 Advanced Diagnostics"
+        )
+
+    def _update_global_status(self) -> None:
+        """Refresh the unified status bar with model, dictation, and professional mode state."""
+        model_color_map = {
+            ModelStatus.READY: COLOR_SUCCESS,
+            ModelStatus.VALIDATED: COLOR_VALIDATED,
+            ModelStatus.LOADING: COLOR_WARNING,
+            ModelStatus.NOT_LOADED: COLOR_NEUTRAL,
+            ModelStatus.VALIDATING: COLOR_INFO,
+            ModelStatus.ERROR: COLOR_ERROR,
+        }
+        dict_color_map = {
+            DictationState.IDLE: COLOR_IDLE,
+            DictationState.RECORDING: COLOR_ERROR,
+            DictationState.PROCESSING: COLOR_WARNING,
+            DictationState.SUCCESS: COLOR_SUCCESS,
+            DictationState.ERROR: COLOR_ERROR,
+        }
+        m_color = model_color_map.get(self._model_status, COLOR_NEUTRAL)
+        d_color = dict_color_map.get(self._dictation_state, COLOR_IDLE)
+
+        # Professional mode status
+        if self.settings.professional_mode and self._text_processor is not None:
+            preset_name = self.settings.pro_active_preset
+            pro_text = f'Active ({preset_name})'
+            pro_color = COLOR_SUCCESS
+        elif self.settings.professional_mode:
+            pro_text = 'No API Key'
+            pro_color = COLOR_WARNING
+        else:
+            pro_text = 'Inactive'
+            pro_color = COLOR_NEUTRAL
+
+        self._lbl_global_status.setText(
+            f'Model: <span style="color:{m_color}"><b>{self._model_status.value}</b></span>'
+            f'  \u00b7  '
+            f'Dictation: <span style="color:{d_color}"><b>{self._dictation_state.value}</b></span>'
+            f'  \u00b7  '
+            f'Professional: <span style="color:{pro_color}"><b>{pro_text}</b></span>'
+        )
 
     # ═════════════════════════════════════════════════════════════════════════
     # LOGGING INTEGRATION
@@ -530,7 +582,7 @@ class MainWindow(QMainWindow):
         self._lbl_model_status.setText(
             f'Status: <span style="color:{color}"><b>{status.value}</b></span>'
         )
-        self.statusBar().showMessage(f"Model: {status.value}")
+        self._update_global_status()
         self._refresh_dictation_buttons()
 
     def _load_model(self) -> None:
@@ -669,17 +721,7 @@ class MainWindow(QMainWindow):
 
     def _set_dictation_state(self, state: DictationState) -> None:
         self._dictation_state = state
-        color_map = {
-            DictationState.IDLE: COLOR_IDLE,
-            DictationState.RECORDING: COLOR_ERROR,
-            DictationState.PROCESSING: COLOR_WARNING,
-            DictationState.SUCCESS: COLOR_SUCCESS,
-            DictationState.ERROR: COLOR_ERROR,
-        }
-        color = color_map.get(state, COLOR_IDLE)
-        self._lbl_dictation_state.setText(
-            f'State: <span style="color:{color}"><b>{state.value}</b></span>'
-        )
+        self._update_global_status()
         self._refresh_dictation_buttons()
 
     def _refresh_dictation_buttons(self) -> None:
@@ -845,7 +887,7 @@ class MainWindow(QMainWindow):
         ts, original = ctx
         cleaned = str(cleaned_raw).strip()
         if cleaned and cleaned != original:
-            self._log_ui(f"Professional cleanup: {len(original)} → {len(cleaned)} chars")
+            self._log_ui(f"Professional cleanup: {len(original)} -> {len(cleaned)} chars")
             self._add_history(ts, cleaned, success=True, original_text=original)
             output = cleaned
         else:
@@ -992,16 +1034,20 @@ class MainWindow(QMainWindow):
     # ═════════════════════════════════════════════════════════════════════════
 
     @Slot()
-    def _on_clear_logs_and_history(self) -> None:
-        """Clear the in-memory history, UI log panel, and on-disk log files."""
+    def _on_clear_history(self) -> None:
+        """Clear the in-memory transcription history."""
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self._log_ui("History cleared")
 
+    @Slot()
+    def _on_clear_logs(self) -> None:
+        """Clear the UI log panel and on-disk log files."""
         self._log_text.clear()
         self._delete_log_files()
-        self._log_ui("Logs and history cleared")
+        self._log_ui("Logs cleared")
 
     @Slot()
     def _on_copy_logs(self) -> None:
@@ -1083,73 +1129,6 @@ class MainWindow(QMainWindow):
                             self._engine = engine_cls()
                             self._lbl_engine.setText(f"Engine: {self._engine.name}")
                     self._on_reload_model()
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # PROFESSIONAL MODE UI
-    # ═════════════════════════════════════════════════════════════════════════
-
-    @staticmethod
-    def _pro_toggle_style(enabled: bool) -> str:
-        if enabled:
-            return (
-                "QPushButton { background-color: #2e7d32; color: white; "
-                "font-weight: bold; padding: 4px 12px; border-radius: 4px; }"
-            )
-        return (
-            "QPushButton { background-color: #616161; color: white; "
-            "padding: 4px 12px; border-radius: 4px; }"
-        )
-
-    def _refresh_preset_combo(self) -> None:
-        """Populate the preset combo box from the loaded presets."""
-        self._combo_preset.blockSignals(True)
-        self._combo_preset.clear()
-        for name in sorted(self._pro_presets.keys()):
-            self._combo_preset.addItem(name)
-        idx = self._combo_preset.findText(self.settings.pro_active_preset)
-        if idx >= 0:
-            self._combo_preset.setCurrentIndex(idx)
-        elif self._combo_preset.count() > 0:
-            self._combo_preset.setCurrentIndex(0)
-        self._combo_preset.blockSignals(False)
-
-    @Slot(bool)
-    def _on_pro_toggle(self, checked: bool) -> None:
-        """Toggle Professional Mode on/off from the main window button."""
-        self.settings.professional_mode = checked
-        self._btn_pro_toggle.setText("PRO: ON" if checked else "PRO: OFF")
-        self._btn_pro_toggle.setStyleSheet(self._pro_toggle_style(checked))
-        self._apply_settings()
-        self.settings.save()
-
-    @Slot(str)
-    def _on_preset_combo_changed(self, name: str) -> None:
-        """Handle preset selection change from the combo box."""
-        if not name:
-            return
-        self.settings.pro_active_preset = name
-        self._active_preset = self._pro_presets.get(name)
-        if self.settings.professional_mode:
-            self._apply_settings()
-        self.settings.save()
-
-    @Slot()
-    def _on_open_pro_settings(self) -> None:
-        """Open the Professional Mode settings dialog."""
-        from .pro_settings_dialog import ProSettingsDialog
-
-        dlg = ProSettingsDialog(
-            settings=self.settings,
-            presets=self._pro_presets,
-            presets_dir=DEFAULT_PRESETS_DIR,
-            parent=self,
-            api_key=self._api_key,
-        )
-        if dlg.exec() == ProSettingsDialog.DialogCode.Accepted:
-            self._api_key = dlg.api_key
-            self._pro_presets = dlg.presets
-            self._refresh_preset_combo()
-            self._apply_settings()
 
     @staticmethod
     def _engines_need_restart(old_engine: str, new_engine: str) -> bool:
@@ -1239,6 +1218,43 @@ class MainWindow(QMainWindow):
                 )
 
         self._log_ui("Settings applied")
+        self._update_global_status()
+
+    @Slot()
+    def _on_open_pro_settings(self) -> None:
+        """Open the Professional Mode settings dialog."""
+        from .pro_settings_dialog import ProSettingsDialog
+
+        dlg = ProSettingsDialog(
+            settings=self.settings,
+            presets=self._pro_presets,
+            presets_dir=DEFAULT_PRESETS_DIR,
+            parent=self,
+            api_key=self._api_key,
+        )
+        if dlg.exec() == ProSettingsDialog.DialogCode.Accepted:
+            self._api_key = dlg.api_key
+            self._pro_presets = dlg.presets
+            self._active_preset = self._pro_presets.get(
+                self.settings.pro_active_preset,
+            )
+
+            # Re-create or destroy TextProcessor based on new state
+            if self.settings.professional_mode and self._api_key and self._active_preset:
+                model = self._active_preset.model or "gpt-5.4-mini"
+                self._text_processor = TextProcessor(
+                    api_key=self._api_key, model=model,
+                )
+                self._log_ui("Professional Mode enabled")
+            else:
+                self._text_processor = None
+                if self.settings.professional_mode and not self._api_key:
+                    self._log_ui(
+                        "Professional Mode enabled but no API key configured",
+                        error=True,
+                    )
+
+            self._update_global_status()
 
     # ═════════════════════════════════════════════════════════════════════════
     # SLEEP / WAKE RECOVERY

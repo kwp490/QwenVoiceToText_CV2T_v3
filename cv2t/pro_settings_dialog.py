@@ -1,9 +1,10 @@
 """
 Professional Mode settings dialog.
 
-Provides a sidebar-navigated dialog for configuring API credentials,
-managing presets (built-in + user-created), editing custom system
-prompts, and defining domain-specific vocabulary to preserve.
+Provides a single scrollable dialog for configuring API credentials,
+enabling/disabling professional mode, managing presets (built-in +
+user-created), editing custom system prompts, and defining
+domain-specific vocabulary to preserve.
 """
 
 from __future__ import annotations
@@ -29,8 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSplitter,
-    QStackedWidget,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -52,7 +52,7 @@ log = logging.getLogger(__name__)
 
 
 class ProSettingsDialog(QDialog):
-    """Sidebar-navigated dialog for Professional Mode configuration."""
+    """Unified scrollable dialog for Professional Mode configuration."""
 
     def __init__(
         self,
@@ -79,55 +79,38 @@ class ProSettingsDialog(QDialog):
     # ── UI construction ──────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
 
-        splitter = QSplitter()
+        # ── Scrollable content area ──────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
 
-        # ── Sidebar ──────────────────────────────────────────────────────
-        self._sidebar = QListWidget()
-        self._sidebar.setFixedWidth(180)
-        self._sidebar.addItem("API Configuration")
-        self._sidebar.addItem("Presets")
-        self._sidebar.addItem("Custom Instructions")
-        self._sidebar.addItem("Vocabulary")
-        self._sidebar.currentRowChanged.connect(self._on_page_changed)
-        splitter.addWidget(self._sidebar)
+        # ── Enable / Activate section ────────────────────────────────────
+        enable_group = QGroupBox("Professional Mode")
+        enable_form = QFormLayout()
 
-        # ── Stacked pages ────────────────────────────────────────────────
-        self._pages = QStackedWidget()
-        self._pages.addWidget(self._build_api_page())
-        self._pages.addWidget(self._build_presets_page())
-        self._pages.addWidget(self._build_instructions_page())
-        self._pages.addWidget(self._build_vocabulary_page())
-        splitter.addWidget(self._pages)
+        self._pro_enabled = QCheckBox("Enable Professional Mode")
+        enable_form.addRow(self._pro_enabled)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter)
+        self._pro_preset_combo = QComboBox()
+        self._pro_preset_combo.setMinimumWidth(160)
+        enable_form.addRow("Active preset:", self._pro_preset_combo)
 
-        # ── Button box ───────────────────────────────────────────────────
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._save_and_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        enable_group.setLayout(enable_form)
+        layout.addWidget(enable_group)
 
-    # ── Page builders ────────────────────────────────────────────────────
+        # ── API Configuration section ────────────────────────────────────
+        api_group = QGroupBox("API Configuration")
+        api_form = QFormLayout()
 
-    def _build_api_page(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
-        form.setContentsMargins(12, 12, 12, 12)
-
-        # Model selector
         self._pro_model = QComboBox()
         self._pro_model.setEditable(True)
         self._pro_model.addItems(["gpt-5.4-mini", "gpt-5.4-nano"])
-        form.addRow("Default model:", self._pro_model)
+        api_form.addRow("Default model:", self._pro_model)
 
-        # API key row
         key_row = QHBoxLayout()
         self._pro_api_key = QLineEdit()
         self._pro_api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -140,14 +123,13 @@ class ProSettingsDialog(QDialog):
         self._btn_eye.setToolTip("Show / hide API key")
         self._btn_eye.toggled.connect(self._toggle_key_visibility)
         key_row.addWidget(self._btn_eye)
-        form.addRow("API key:", key_row)
+        api_form.addRow("API key:", key_row)
 
         self._pro_store_key = QCheckBox(
             "Remember API key (Windows Credential Manager)"
         )
-        form.addRow(self._pro_store_key)
+        api_form.addRow(self._pro_store_key)
 
-        # Validate button
         validate_row = QHBoxLayout()
         self._btn_validate_key = QPushButton("Validate API Key")
         self._btn_validate_key.clicked.connect(self._on_validate_api_key)
@@ -155,21 +137,19 @@ class ProSettingsDialog(QDialog):
         self._lbl_validate_result = QLabel("")
         validate_row.addWidget(self._lbl_validate_result)
         validate_row.addStretch()
-        form.addRow(validate_row)
+        api_form.addRow(validate_row)
 
-        return page
+        api_group.setLayout(api_form)
+        layout.addWidget(api_group)
 
-    def _build_presets_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(12, 12, 12, 12)
+        # ── Presets section ──────────────────────────────────────────────
+        presets_group = QGroupBox("Presets")
+        presets_layout = QVBoxLayout()
 
-        # Preset list
         self._preset_list = QListWidget()
         self._preset_list.currentItemChanged.connect(self._on_preset_selected)
-        layout.addWidget(self._preset_list)
+        presets_layout.addWidget(self._preset_list)
 
-        # Action buttons
         btn_row = QHBoxLayout()
         self._btn_new_preset = QPushButton("New")
         self._btn_new_preset.clicked.connect(self._on_new_preset)
@@ -184,9 +164,8 @@ class ProSettingsDialog(QDialog):
         btn_row.addWidget(self._btn_del_preset)
 
         btn_row.addStretch()
-        layout.addLayout(btn_row)
+        presets_layout.addLayout(btn_row)
 
-        # ── Preset detail area ───────────────────────────────────────────
         detail_group = QGroupBox("Preset Details")
         detail_form = QFormLayout()
 
@@ -211,48 +190,71 @@ class ProSettingsDialog(QDialog):
         detail_form.addRow(self._preset_fix_punctuation)
 
         detail_group.setLayout(detail_form)
-        layout.addWidget(detail_group)
+        presets_layout.addWidget(detail_group)
 
-        return page
+        presets_group.setLayout(presets_layout)
+        layout.addWidget(presets_group)
 
-    def _build_instructions_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(12, 12, 12, 12)
+        # ── Custom Instructions section ──────────────────────────────────
+        instructions_group = QGroupBox("Custom Instructions")
+        instructions_layout = QVBoxLayout()
 
-        self._lbl_instructions_preset = QLabel("Select a preset on the Presets page first.")
-        layout.addWidget(self._lbl_instructions_preset)
+        self._lbl_instructions_preset = QLabel("Select a preset first.")
+        instructions_layout.addWidget(self._lbl_instructions_preset)
 
         self._instructions_edit = QPlainTextEdit()
         self._instructions_edit.setPlaceholderText(
             "Enter custom system prompt instructions for the selected preset…\n\n"
             "Example: Always use Oxford comma. Keep paragraphs under 3 sentences."
         )
-        layout.addWidget(self._instructions_edit)
+        self._instructions_edit.setMinimumHeight(100)
+        instructions_layout.addWidget(self._instructions_edit)
 
-        return page
+        instructions_group.setLayout(instructions_layout)
+        layout.addWidget(instructions_group)
 
-    def _build_vocabulary_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(12, 12, 12, 12)
+        # ── Vocabulary section ───────────────────────────────────────────
+        vocab_group = QGroupBox("Vocabulary")
+        vocab_layout = QVBoxLayout()
 
-        self._lbl_vocab_preset = QLabel("Select a preset on the Presets page first.")
-        layout.addWidget(self._lbl_vocab_preset)
+        self._lbl_vocab_preset = QLabel("Select a preset first.")
+        vocab_layout.addWidget(self._lbl_vocab_preset)
 
         self._vocab_edit = QPlainTextEdit()
         self._vocab_edit.setPlaceholderText(
             "Enter domain-specific terms to preserve (comma or newline separated)…\n\n"
             "Example:\nKubernetes, gRPC, OAuth2, CI/CD"
         )
-        layout.addWidget(self._vocab_edit)
+        self._vocab_edit.setMinimumHeight(100)
+        vocab_layout.addWidget(self._vocab_edit)
 
-        return page
+        vocab_group.setLayout(vocab_layout)
+        layout.addWidget(vocab_group)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        # ── Button box (outside scroll area) ─────────────────────────────
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
 
     # ── Populate / Save ──────────────────────────────────────────────────
 
     def _populate(self) -> None:
-        # API page
+        # Enable toggle + active preset combo
+        self._pro_enabled.setChecked(self._settings.professional_mode)
+        self._refresh_preset_combo()
+        idx = self._pro_preset_combo.findText(self._active_preset_name)
+        if idx >= 0:
+            self._pro_preset_combo.setCurrentIndex(idx)
+
+        # API section
         if self._api_key:
             self._pro_api_key.setText(self._api_key)
         elif self._settings.store_api_key:
@@ -272,8 +274,13 @@ class ProSettingsDialog(QDialog):
                 self._preset_list.setCurrentItem(item)
                 break
 
-        # Default sidebar to first page
-        self._sidebar.setCurrentRow(0)
+    def _refresh_preset_combo(self) -> None:
+        """Populate the active-preset combo from loaded presets."""
+        self._pro_preset_combo.blockSignals(True)
+        self._pro_preset_combo.clear()
+        for name in sorted(self._presets.keys()):
+            self._pro_preset_combo.addItem(name)
+        self._pro_preset_combo.blockSignals(False)
 
     def _refresh_preset_list(self) -> None:
         current_name = None
@@ -299,6 +306,12 @@ class ProSettingsDialog(QDialog):
         # Flush current preset edits
         self._flush_preset_edits()
 
+        # Professional Mode enable/preset
+        self._settings.professional_mode = self._pro_enabled.isChecked()
+        preset_name = self._pro_preset_combo.currentText()
+        if preset_name:
+            self._settings.pro_active_preset = preset_name
+
         # API key
         self._api_key = self._pro_api_key.text().strip()
         self._settings.store_api_key = self._pro_store_key.isChecked()
@@ -312,18 +325,18 @@ class ProSettingsDialog(QDialog):
         for name, preset in self._presets.items():
             save_preset(preset, self._presets_dir)
 
-        # Persist active preset choice
-        if self._preset_list.currentItem():
-            self._settings.pro_active_preset = self._preset_list.currentItem().text()
+        # Warn if enabling Professional Mode without an API key
+        if self._settings.professional_mode and not self._api_key:
+            QMessageBox.warning(
+                self,
+                "No API Key",
+                "Professional Mode is enabled but no API key has been entered.\n\n"
+                "Text cleanup will not run until a valid OpenAI API key is configured.",
+            )
 
         self._settings.save()
         log.info("Professional Mode settings saved")
         self.accept()
-
-    # ── Page navigation ──────────────────────────────────────────────────
-
-    def _on_page_changed(self, index: int) -> None:
-        self._pages.setCurrentIndex(index)
 
     # ── Preset management ────────────────────────────────────────────────
 
