@@ -218,6 +218,43 @@ class TestLayoutStructure(unittest.TestCase):
         src = self._get_method_source("_update_global_status")
         self.assertIn("Professional", src)
 
+    # ── Phase 6 (professional mode quick-toggle checkbox) ────────────
+
+    def test_chk_professional_in_build_ui(self):
+        """_chk_professional checkbox must be created in _build_ui."""
+        src = self._get_method_source("_build_ui")
+        self.assertIn("self._chk_professional", src)
+        self.assertIn('QCheckBox("Professional Mode")', src)
+
+    def test_chk_professional_connected_to_toggled(self):
+        """_chk_professional must be connected to _on_professional_toggled."""
+        src = self._get_method_source("_build_ui")
+        self.assertIn("_chk_professional.toggled.connect(self._on_professional_toggled)", src)
+
+    def test_on_professional_toggled_method_exists(self):
+        """_on_professional_toggled must be defined in MainWindow."""
+        method_names = [
+            n.name for n in ast.walk(self._mw_class)
+            if isinstance(n, ast.FunctionDef)
+        ]
+        self.assertIn("_on_professional_toggled", method_names)
+
+    def test_on_professional_toggled_handles_no_api_key(self):
+        """_on_professional_toggled must handle the no-API-key case."""
+        src = self._get_method_source("_on_professional_toggled")
+        self.assertIn("API Key Required", src)
+
+    def test_on_professional_toggled_handles_no_preset(self):
+        """_on_professional_toggled must handle the no-preset case."""
+        src = self._get_method_source("_on_professional_toggled")
+        self.assertIn("No Preset Configured", src)
+
+    def test_pro_settings_syncs_checkbox(self):
+        """_on_open_pro_settings must sync _chk_professional after dialog."""
+        src = self._get_method_source("_on_open_pro_settings")
+        self.assertIn("_chk_professional.setChecked", src)
+        self.assertIn("_chk_professional.blockSignals", src)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Live widget tests — require PySide6
@@ -230,8 +267,10 @@ class TestDiagnosticsToggleLive(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QMessageBox
         cls._app = QApplication.instance() or QApplication([])
+        # Make QMessageBox available to all test methods in this class
+        globals()["QMessageBox"] = QMessageBox
 
     def _make_window(self):
         """Create a MainWindow with mocked engine for testing."""
@@ -310,5 +349,95 @@ class TestDiagnosticsToggleLive(unittest.TestCase):
         win = self._make_window()
         try:
             self.assertGreaterEqual(win._btn_stop.minimumHeight(), 50)
+        finally:
+            win.close()
+
+    # ── Phase 6 (professional mode quick-toggle live tests) ──────────
+
+    def test_chk_professional_exists(self):
+        """Professional Mode checkbox must exist on the main window."""
+        win = self._make_window()
+        try:
+            self.assertIsNotNone(win._chk_professional)
+            self.assertEqual(win._chk_professional.text(), "Professional Mode")
+        finally:
+            win.close()
+
+    def test_chk_professional_default_unchecked(self):
+        """Professional Mode checkbox defaults to unchecked (pro mode off)."""
+        win = self._make_window()
+        try:
+            self.assertFalse(win._chk_professional.isChecked())
+        finally:
+            win.close()
+
+    def test_chk_professional_reflects_settings(self):
+        """Professional Mode checkbox reflects settings.professional_mode."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        from cv2t.config import Settings
+        from cv2t.main_window import MainWindow
+
+        settings = Settings()
+        settings.professional_mode = True
+        settings.hotkeys_enabled = False
+
+        engine = MagicMock()
+        engine.name = "mock"
+        type(engine).is_loaded = PropertyMock(return_value=False)
+
+        win = MainWindow(settings, engine=engine)
+        try:
+            self.assertTrue(win._chk_professional.isChecked())
+        finally:
+            win.close()
+
+    def test_toggle_on_without_api_key_reverts(self):
+        """Enabling Professional Mode without an API key must revert the checkbox."""
+        from unittest.mock import patch
+        win = self._make_window()
+        try:
+            win._api_key = ""
+            # Patch QMessageBox to auto-click No (cancel)
+            with patch(
+                "cv2t.main_window.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.No,
+            ):
+                win._chk_professional.setChecked(True)
+            self.assertFalse(win._chk_professional.isChecked())
+            self.assertFalse(win.settings.professional_mode)
+        finally:
+            win.close()
+
+    def test_toggle_on_with_api_key_enables(self):
+        """Enabling Professional Mode with API key and preset must succeed."""
+        from unittest.mock import MagicMock
+        from cv2t.pro_preset import ProPreset
+
+        win = self._make_window()
+        try:
+            win._api_key = "sk-test-key"
+            win._active_preset = ProPreset(name="Test")
+            win._chk_professional.setChecked(True)
+            self.assertTrue(win.settings.professional_mode)
+            self.assertIsNotNone(win._text_processor)
+        finally:
+            win.close()
+
+    def test_toggle_off_disables(self):
+        """Disabling Professional Mode must clear TextProcessor."""
+        from unittest.mock import MagicMock
+        from cv2t.pro_preset import ProPreset
+
+        win = self._make_window()
+        try:
+            # First enable
+            win._api_key = "sk-test-key"
+            win._active_preset = ProPreset(name="Test")
+            win._chk_professional.setChecked(True)
+            self.assertIsNotNone(win._text_processor)
+            # Then disable
+            win._chk_professional.setChecked(False)
+            self.assertFalse(win.settings.professional_mode)
+            self.assertIsNone(win._text_processor)
         finally:
             win.close()

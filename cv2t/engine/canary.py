@@ -13,6 +13,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -23,8 +24,30 @@ from .base import SpeechEngine, _cleanup_gpu_memory
 
 log = logging.getLogger(__name__)
 
-_MAX_CHUNK_SECONDS = 30.0
+_MAX_CHUNK_SECONDS = 40.0
 _OVERLAP_SECONDS = 2.0
+
+
+def _needs_blackwell_workarounds(force_sync: str = "auto") -> bool:
+    """Return True if Blackwell-specific CUDA workarounds should be applied.
+
+    * ``"auto"`` (default): detect sm_120+ via ``torch.cuda``.
+    * ``"on"``: always apply workarounds.
+    * ``"off"``: never apply workarounds (user overrides at own risk).
+    """
+    if force_sync == "on":
+        return True
+    if force_sync == "off":
+        return False
+    try:
+        import torch
+        if torch.cuda.is_available():
+            major, _minor = torch.cuda.get_device_capability(0)
+            return major >= 12   # sm_120 = Blackwell
+    except Exception:
+        pass
+    # Default to safe path when detection fails.
+    return True
 
 
 def _get_temp_dir() -> str:
@@ -48,9 +71,15 @@ class CanaryEngine(SpeechEngine):
     (KV caches, attention buffers) is not safe across OS threads.
     """
 
+    # Run gc.collect() every N transcriptions instead of every call to
+    # reduce GC pauses on the hot path.
+    _GC_INTERVAL = 5
+
     def __init__(self) -> None:
         super().__init__()
         self._device: str = "cuda"
+        self._transcribe_count: int = 0
+        self.force_cuda_sync: str = "auto"
 
         # Dedicated inference thread — all CUDA / PyTorch work runs here.
         self._inf_queue: queue.Queue = queue.Queue()
@@ -112,19 +141,25 @@ class CanaryEngine(SpeechEngine):
         import sys
         import types
 
-        # Disable torch.compile / Dynamo before importing torch.  NeMo/SALM
-        # can trigger compiled CUDA graphs that cache input shapes; the
-        # second generate() call with different audio length hangs because
-        # the cached graph shape no longer matches.
-        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-
-        # Force synchronous CUDA kernel execution.  Blackwell (sm_120)
-        # with NeMo SALM can hang on subsequent generate() calls when
-        # async-launched kernels silently corrupt state.  The ~10-20%
-        # throughput cost is negligible for a voice-to-text app.
-        os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
-
         import torch
+
+        # Apply Blackwell-specific workarounds only when needed.
+        blackwell = _needs_blackwell_workarounds(self.force_cuda_sync)
+
+        if blackwell:
+            # Disable torch.compile / Dynamo.  NeMo/SALM can trigger compiled
+            # CUDA graphs that cache input shapes; the second generate() call
+            # with different audio length hangs on Blackwell.
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            # Force synchronous CUDA kernel execution.  Blackwell (sm_120)
+            # with NeMo SALM can hang when async-launched kernels silently
+            # corrupt state.
+            os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+            log.info("Blackwell GPU detected — CUDA_LAUNCH_BLOCKING and "
+                     "TORCHDYNAMO_DISABLE enabled for stability")
+        else:
+            log.info("Non-Blackwell GPU detected — async CUDA and "
+                     "torch.compile enabled for throughput")
 
         torch.compiler.disable(recursive=True)
 
@@ -193,11 +228,14 @@ class CanaryEngine(SpeechEngine):
 
         log.info("Loading Canary model from %s (dtype=%s)", model_path, load_dtype)
 
-        # Blackwell (sm_120) may have incomplete flash/memory-efficient
-        # SDPA kernels in current PyTorch builds.  Fall back to the
-        # portable math implementation to avoid native CUDA crashes.
-        torch.backends.cuda.enable_flash_sdp(False)
-        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        # Blackwell (sm_120): Flash SDP is not compiled into PyTorch
+        # 2.7.x Windows wheels.  Disable it to avoid falling through to
+        # the slow math-only backend.  Memory-efficient and cuDNN SDPA
+        # kernels work correctly on sm_120 and are ~26x faster than math.
+        if blackwell:
+            torch.backends.cuda.enable_flash_sdp(False)
+            log.info("Disabled Flash SDP (Blackwell); mem-efficient "
+                     "and cuDNN SDPA remain enabled")
 
         self._model = SALM.from_pretrained(model_path)
         self._model = self._model.eval().to(device=device, dtype=load_dtype)
@@ -252,31 +290,53 @@ class CanaryEngine(SpeechEngine):
         """Transcribe 16 kHz audio with mandatory chunking (inference thread)."""
         import torch
 
-        # Chunk audio (30s chunks, 2s overlap — well within 40s limit)
+        t_total = time.perf_counter()
+
+        # Chunk audio (40s chunks, 2s overlap)
+        t0 = time.perf_counter()
         chunks = chunk_audio(audio_16k, 16000, _MAX_CHUNK_SECONDS, _OVERLAP_SECONDS)
-        log.info("Transcribing %d chunk(s)", len(chunks))
+        t_chunk = time.perf_counter() - t0
+        log.info("Transcribing %d chunk(s) (chunking %.3fs)", len(chunks), t_chunk)
 
         texts = []
+        t_generate_total = 0.0
+        t_io_total = 0.0
         for i, chunk in enumerate(chunks):
-            text = self._transcribe_chunk(chunk, torch)
+            text, t_gen, t_io = self._transcribe_chunk(chunk, torch)
+            t_generate_total += t_gen
+            t_io_total += t_io
             log.info("Chunk %d/%d: %d chars", i + 1, len(chunks), len(text))
             texts.append(text)
 
+        t0 = time.perf_counter()
         result = stitch_transcripts(texts)
+        t_stitch = time.perf_counter() - t0
 
-        # Release Python references to transient CUDA tensors from the
-        # generate() call.  Without this, dead tensor objects accumulate
-        # and can confuse PyTorch's caching allocator on subsequent calls.
-        gc.collect()
+        # Periodic GC to release transient CUDA tensors from generate()
+        # without pausing every single transcription.
+        self._transcribe_count += 1
+        if self._transcribe_count % self._GC_INTERVAL == 0:
+            gc.collect()
+
+        t_elapsed = time.perf_counter() - t_total
+        log.info("[perf] total=%.3fs generate=%.3fs file_io=%.3fs "
+                 "chunk=%.3fs stitch=%.3fs chunks=%d",
+                 t_elapsed, t_generate_total, t_io_total,
+                 t_chunk, t_stitch, len(chunks))
 
         return result
 
-    def _transcribe_chunk(self, chunk: np.ndarray, torch_module) -> str:
-        """Transcribe a single audio chunk via NeMo conversation API."""
+    def _transcribe_chunk(self, chunk: np.ndarray, torch_module) -> tuple:
+        """Transcribe a single audio chunk via NeMo conversation API.
+
+        Returns ``(text, generate_seconds, io_seconds)``.
+        """
         fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=_get_temp_dir())
         os.close(fd)
         try:
+            t_io = time.perf_counter()
             sf.write(tmp_path, chunk, 16000)
+            t_io = time.perf_counter() - t_io
 
             duration = len(chunk) / 16000
             max_tokens = max(64, int(duration * 20))
@@ -288,20 +348,20 @@ class CanaryEngine(SpeechEngine):
                 "audio": [tmp_path],
             }]]
 
-            log.info("entering generate()")
-            logging.getLogger().handlers[0].flush() if logging.getLogger().handlers else None
-
+            t_gen = time.perf_counter()
             with torch_module.no_grad():
                 response = self._model.generate(
                     prompts=conversation,
                     max_new_tokens=max_tokens,
+                    num_beams=1,
                 )[0]
 
             torch_module.cuda.synchronize()
-            log.info("generate() returned %d token(s)", len(response))
+            t_gen = time.perf_counter() - t_gen
+            log.info("generate() returned %d token(s) in %.3fs", len(response), t_gen)
             text = self._model.tokenizer.ids_to_text(response.cpu())
             text = text.replace("<|endoftext|>", "").strip()
-            return text
+            return text, t_gen, t_io
         finally:
             try:
                 os.unlink(tmp_path)

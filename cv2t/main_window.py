@@ -326,9 +326,13 @@ class MainWindow(QMainWindow):
         self._chk_hotkeys = QCheckBox("Enable global hotkeys")
         self._chk_hotkeys.setChecked(self.settings.hotkeys_enabled)
         self._chk_hotkeys.toggled.connect(self._on_hotkeys_toggled)
+        self._chk_professional = QCheckBox("Professional Mode")
+        self._chk_professional.setChecked(self.settings.professional_mode)
+        self._chk_professional.toggled.connect(self._on_professional_toggled)
         toggle_row.addWidget(self._chk_auto_copy)
         toggle_row.addWidget(self._chk_auto_paste)
         toggle_row.addWidget(self._chk_hotkeys)
+        toggle_row.addWidget(self._chk_professional)
         toggle_row.addStretch()
         root.addLayout(toggle_row)
 
@@ -593,6 +597,8 @@ class MainWindow(QMainWindow):
         self._log_ui(f"Loading {self._engine.name} model…")
 
         def _do_load():
+            if hasattr(self._engine, "force_cuda_sync"):
+                self._engine.force_cuda_sync = self.settings.force_cuda_sync
             self._engine.load(self.settings.model_path, self.settings.device)
 
         worker = Worker(_do_load)
@@ -629,6 +635,8 @@ class MainWindow(QMainWindow):
 
         def _do_reload():
             self._engine.unload()
+            if hasattr(self._engine, "force_cuda_sync"):
+                self._engine.force_cuda_sync = self.settings.force_cuda_sync
             self._engine.load(self.settings.model_path, self.settings.device)
 
         self._set_model_status(ModelStatus.LOADING)
@@ -773,7 +781,7 @@ class MainWindow(QMainWindow):
             self._set_dictation_state(DictationState.IDLE)
             return
 
-        self._log_ui(f"Captured {len(audio)/self.settings.sample_rate:.1f}s of audio")
+        self._log_ui(f"Recording stopped \u2014 captured {len(audio)/self.settings.sample_rate:.1f}s of audio")
 
         # Heavy work on thread pool — NO clipboard ops here
         def _process():
@@ -1254,7 +1262,61 @@ class MainWindow(QMainWindow):
                         error=True,
                     )
 
+            self._chk_professional.blockSignals(True)
+            self._chk_professional.setChecked(self.settings.professional_mode)
+            self._chk_professional.blockSignals(False)
             self._update_global_status()
+
+    def _on_professional_toggled(self, checked: bool) -> None:
+        """Handle the Professional Mode checkbox in the main toggle row."""
+        if checked:
+            if not self._api_key:
+                self._chk_professional.blockSignals(True)
+                self._chk_professional.setChecked(False)
+                self._chk_professional.blockSignals(False)
+                reply = QMessageBox.question(
+                    self,
+                    "API Key Required",
+                    "Professional Mode requires an OpenAI API key.\n\n"
+                    "Would you like to open Professional Mode Settings "
+                    "to configure one?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._on_open_pro_settings()
+                return
+            if self._active_preset is None:
+                self._chk_professional.blockSignals(True)
+                self._chk_professional.setChecked(False)
+                self._chk_professional.blockSignals(False)
+                reply = QMessageBox.question(
+                    self,
+                    "No Preset Configured",
+                    "Professional Mode requires an active preset.\n\n"
+                    "Would you like to open Professional Mode Settings "
+                    "to configure one?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._on_open_pro_settings()
+                return
+            # All prerequisites met — enable
+            self.settings.professional_mode = True
+            model = self._active_preset.model or "gpt-5.4-mini"
+            self._text_processor = TextProcessor(
+                api_key=self._api_key, model=model,
+            )
+            self._log_ui("Professional Mode enabled")
+        else:
+            self.settings.professional_mode = False
+            self._text_processor = None
+            self._log_ui("Professional Mode disabled")
+        self.settings.save()
+        self._update_global_status()
 
     # ═════════════════════════════════════════════════════════════════════════
     # SLEEP / WAKE RECOVERY

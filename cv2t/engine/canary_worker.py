@@ -98,8 +98,30 @@ def _stitch_transcripts(texts: list) -> str:
 # ── Model state ──────────────────────────────────────────────────────────────
 
 _model = None
-_MAX_CHUNK_SECONDS = 30.0
+_MAX_CHUNK_SECONDS = 40.0
 _OVERLAP_SECONDS = 2.0
+
+
+def _needs_blackwell_workarounds(force_sync: str = "auto") -> bool:
+    """Return True if Blackwell-specific CUDA workarounds should be applied.
+
+    * ``"auto"`` (default): detect sm_120+ via ``torch.cuda``.
+    * ``"on"``: always apply workarounds.
+    * ``"off"``: never apply workarounds (user overrides at own risk).
+    """
+    if force_sync == "on":
+        return True
+    if force_sync == "off":
+        return False
+    try:
+        import torch
+        if torch.cuda.is_available():
+            major, _minor = torch.cuda.get_device_capability(0)
+            return major >= 12   # sm_120 = Blackwell
+    except Exception:
+        pass
+    # Default to safe path when detection fails.
+    return True
 
 
 def _get_temp_dir() -> str:
@@ -108,7 +130,8 @@ def _get_temp_dir() -> str:
     return d
 
 
-def _load_model(model_path: str, device: str = "cuda") -> None:
+def _load_model(model_path: str, device: str = "cuda",
+                force_cuda_sync: str = "auto") -> None:
     """Load Canary NeMo SALM model."""
     global _model
     import importlib.machinery
@@ -117,8 +140,16 @@ def _load_model(model_path: str, device: str = "cuda") -> None:
 
     import numpy as np
 
-    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-    os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+    blackwell = _needs_blackwell_workarounds(force_cuda_sync)
+
+    if blackwell:
+        os.environ["TORCHDYNAMO_DISABLE"] = "1"
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+        log.info("Blackwell GPU detected — CUDA_LAUNCH_BLOCKING and "
+                 "TORCHDYNAMO_DISABLE enabled for stability")
+    else:
+        log.info("Non-Blackwell GPU detected — async CUDA and "
+                 "torch.compile enabled for throughput")
 
     import torch
 
@@ -186,9 +217,13 @@ def _load_model(model_path: str, device: str = "cuda") -> None:
 
     log.info("Loading Canary model from %s (dtype=%s)", model_path, load_dtype)
 
-    # Disable SDPA kernels that may be incomplete on newer architectures
-    torch.backends.cuda.enable_flash_sdp(False)
-    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    # Blackwell (sm_120): Flash SDP is not compiled into PyTorch
+    # 2.7.x Windows wheels.  Disable it so PyTorch selects the fast
+    # mem-efficient or cuDNN backends instead of the slow math fallback.
+    if blackwell:
+        torch.backends.cuda.enable_flash_sdp(False)
+        log.info("Disabled Flash SDP (Blackwell); mem-efficient "
+                 "and cuDNN SDPA remain enabled")
 
     _model = SALM.from_pretrained(model_path)
     _model = _model.eval().to(device=device, dtype=load_dtype)
@@ -225,9 +260,13 @@ def _load_model(model_path: str, device: str = "cuda") -> None:
 
 def _transcribe(audio_file: str, language: str = "en") -> str:
     """Transcribe audio from a WAV file."""
+    import time
+
     import numpy as np
     import soundfile as sf
     import torch
+
+    t_total = time.perf_counter()
 
     audio, sr = sf.read(audio_file, dtype="float32")
     if audio.ndim > 1:
@@ -236,13 +275,22 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
     if len(audio_16k) == 0:
         return ""
 
+    t0 = time.perf_counter()
     chunks = _chunk_audio(audio_16k, 16000, _MAX_CHUNK_SECONDS, _OVERLAP_SECONDS)
+    t_chunk = time.perf_counter() - t0
+    log.info("Transcribing %d chunk(s) (chunking %.3fs)", len(chunks), t_chunk)
+
     texts = []
-    for chunk in chunks:
+    t_generate_total = 0.0
+    t_io_total = 0.0
+    for i, chunk in enumerate(chunks):
         fd, chunk_path = tempfile.mkstemp(suffix=".wav", dir=_get_temp_dir())
         os.close(fd)
         try:
+            t_io = time.perf_counter()
             sf.write(chunk_path, chunk, 16000)
+            t_io = time.perf_counter() - t_io
+            t_io_total += t_io
 
             duration = len(chunk) / 16000
             max_tokens = max(64, int(duration * 20))
@@ -255,10 +303,14 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
                 ),
                 "audio": [chunk_path],
             }]]
+            t_gen = time.perf_counter()
             with torch.no_grad():
                 output = _model.generate(
                     prompts=conversation, max_new_tokens=max_tokens,
+                    num_beams=1,
                 )
+            t_gen = time.perf_counter() - t_gen
+            t_generate_total += t_gen
 
             # generate() returns a list of token-ID tensors, not strings.
             # Decode via the model's tokenizer, matching the native engine.
@@ -269,10 +321,6 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
             if isinstance(response, str):
                 text = response
             elif hasattr(response, "cpu"):
-                # Tensor of token IDs — decode to text.
-                # The tensor may be multi-dimensional (e.g. [1, seq_len])
-                # so squeeze and convert to a flat Python list of ints
-                # before passing to ids_to_text.
                 ids = response.cpu().squeeze().tolist()
                 if isinstance(ids, int):
                     ids = [ids]
@@ -280,6 +328,8 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
                 text = text.replace("<|endoftext|>", "")
             else:
                 text = str(response)
+            log.info("Chunk %d/%d: %d chars (generate=%.3fs, io=%.3fs)",
+                     i + 1, len(chunks), len(text.strip()), t_gen, t_io)
             texts.append(text.strip())
         finally:
             try:
@@ -287,7 +337,17 @@ def _transcribe(audio_file: str, language: str = "en") -> str:
             except OSError:
                 pass
 
-    return _stitch_transcripts(texts)
+    t0 = time.perf_counter()
+    result = _stitch_transcripts(texts)
+    t_stitch = time.perf_counter() - t0
+
+    t_elapsed = time.perf_counter() - t_total
+    log.info("[perf] total=%.3fs generate=%.3fs file_io=%.3fs "
+             "chunk=%.3fs stitch=%.3fs chunks=%d",
+             t_elapsed, t_generate_total, t_io_total,
+             t_chunk, t_stitch, len(chunks))
+
+    return result
 
 
 # ── JSON-lines protocol ─────────────────────────────────────────────────────
@@ -338,7 +398,8 @@ def main() -> int:
 
         if cmd == "load":
             try:
-                _load_model(msg["model_path"], msg.get("device", "cuda"))
+                _load_model(msg["model_path"], msg.get("device", "cuda"),
+                            msg.get("force_cuda_sync", "auto"))
                 _send({"status": "ready"})
             except Exception as exc:
                 log.error("Model load failed: %s", exc, exc_info=True)

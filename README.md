@@ -28,10 +28,16 @@ The installer will:
 ## Features
 
 - **Two engine options**: NVIDIA Canary Qwen 2.5B (NeMo) or Faster-Whisper (CTranslate2)
-- **Professional Mode**: Optional AI-powered text cleanup — fixes tone, grammar, and punctuation via OpenAI API
-- **Global hotkeys**: Start/stop recording from any application
+- **Professional Mode**: AI-powered text cleanup via OpenAI API with a preset system — 5 built-in presets, custom presets, domain vocabulary preservation, and per-preset model selection
+- **Global hotkeys**: Start/stop recording from any application (configurable bindings)
 - **Auto-paste**: Transcribed text goes directly to your active window
-- **GPU-accelerated**: Both engines leverage NVIDIA CUDA
+- **GPU-accelerated**: Both engines leverage NVIDIA CUDA with automatic Blackwell (RTX 50-series) workarounds
+- **Microphone selection**: Choose a specific input device or use the system default
+- **Sleep/wake recovery**: Hotkeys automatically re-register after Windows resume from sleep
+- **Single-instance guard**: Prevents multiple CV2T processes from running simultaneously
+- **Real-time resource monitoring**: RAM, VRAM, and GPU temperature displayed in the diagnostics panel
+- **Audio feedback**: Beep tones on recording start/stop
+- **Canary Bridge Engine**: Frozen binary builds can use Canary via a subprocess bridge (`canary-env`)
 - **Runs natively on Windows** — single installer, no dependencies
 
 ## Source Install (both engines)
@@ -54,23 +60,28 @@ uv run cv2t
 
 ## Settings
 
-| Setting             | Default                            | Description                                              |
-|---------------------|------------------------------------|----------------------------------------------------------|
-| `engine`            | `whisper`                          | Speech engine: `canary` or `whisper`                     |
-| `model_path`        | `C:\Program Files\CV2T\models`     | Directory for model weights                              |
-| `device`            | `cuda`                             | Inference device: `cuda` or `cpu`                        |
-| `language`          | `en`                               | Language code                                            |
-| `inference_timeout` | `30`                               | Max seconds per transcription                            |
-| `sample_rate`       | `16000`                            | Recording sample rate (Hz) — resampled to 16 kHz         |
-| `silence_threshold` | `0.0015`                           | RMS threshold for silence detection                      |
-| `auto_copy`         | `true`                             | Auto-copy transcription to clipboard                     |
-| `auto_paste`        | `true`                             | Auto-paste via Ctrl+V after transcription                |
-| `professional_mode` | `false`                            | Enable AI text cleanup (requires OpenAI API key)         |
-| `pro_fix_tone`      | `true`                             | Rewrite unprofessional or emotional language              |
-| `pro_fix_grammar`   | `true`                             | Fix grammar errors                                       |
-| `pro_fix_punctuation`| `true`                            | Fix punctuation and capitalization                        |
-| `pro_model`         | `gpt-5.4-mini`                     | OpenAI model for text cleanup                            |
-| `store_api_key`     | `false`                            | Persist API key in Windows Credential Manager             |
+| Setting              | Default                            | Description                                              |
+|----------------------|------------------------------------|----------------------------------------------------------|
+| `engine`             | `whisper`                          | Speech engine: `canary` or `whisper`                     |
+| `model_path`         | `C:\Program Files\CV2T\models`     | Directory for model weights                              |
+| `device`             | `cuda`                             | Inference device: `cuda` or `cpu`                        |
+| `language`           | `en`                               | Language code                                            |
+| `inference_timeout`  | `30`                               | Max seconds per transcription                            |
+| `force_cuda_sync`    | `auto`                             | CUDA sync mode: `auto`, `on`, `off` — Blackwell GPU workaround |
+| `auto_copy`          | `true`                             | Auto-copy transcription to clipboard                     |
+| `auto_paste`         | `true`                             | Auto-paste via Ctrl+V after transcription                |
+| `hotkeys_enabled`    | `true`                             | Master toggle for global hotkeys                         |
+| `hotkey_start`       | `ctrl+alt+p`                       | Start-recording hotkey                                   |
+| `hotkey_stop`        | `ctrl+alt+l`                       | Stop/transcribe hotkey                                   |
+| `hotkey_quit`        | `ctrl+alt+q`                       | Quit application hotkey                                  |
+| `clear_logs_on_exit` | `true`                             | Clear log files when the application exits               |
+| `mic_device_index`   | `-1`                               | Microphone device index (`-1` = system default)          |
+| `sample_rate`        | `16000`                            | Recording sample rate (Hz) — resampled to 16 kHz         |
+| `silence_threshold`  | `0.0015`                           | RMS threshold for silence detection                      |
+| `silence_margin_ms`  | `500`                              | Silence margin (ms) added around voiced regions          |
+| `professional_mode`  | `false`                            | Enable AI text cleanup (requires OpenAI API key)         |
+| `pro_active_preset`  | `General Professional`             | Active Professional Mode preset name                     |
+| `store_api_key`      | `false`                            | Persist API key in Windows Credential Manager            |
 
 Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
 
@@ -78,55 +89,78 @@ Settings are stored at `C:\Program Files\CV2T\config\settings.json`.
 
 ## Hotkeys
 
-| Hotkey               | Action                               |
+| Hotkey (default)     | Action                               |
 | -------------------- | ------------------------------------ |
 | `Ctrl+Alt+P`         | Start recording                      |
 | `Ctrl+Alt+L`         | Stop recording & transcribe          |
 | `Ctrl+Alt+Q`         | Quit application                     |
 
-Hotkeys are configurable in Settings.
+All hotkey bindings are configurable in Settings. Hotkeys can also be disabled entirely via the `hotkeys_enabled` toggle. After Windows resumes from sleep, hotkeys are automatically re-registered.
 
 ## Professional Mode
 
-Optional AI-powered post-processing that cleans up your dictated text before it reaches the clipboard. Enable it in **Settings → Professional Mode**.
+Optional AI-powered post-processing that cleans up your dictated text before it reaches the clipboard. Configure it via the **Professional Mode Settings** button in the main window.
 
 **What it does:**
 - **Fix tone** — rewrites emotional, aggressive, or unprofessional language while preserving meaning
 - **Fix grammar** — corrects grammar errors
 - **Fix punctuation** — adds proper punctuation and capitalization
+- **Custom instructions** — free-text system prompt per preset for fine-tuning AI behavior
+- **Vocabulary preservation** — domain-specific terms (comma/newline-separated) are preserved verbatim during cleanup
 
-Each option can be toggled independently. When enabled, the transcription history shows both the original and cleaned text.
+Each option is configured per preset — you can have different cleanup rules for different contexts. When enabled, the transcription history shows both the original and cleaned text.
 
-**Requirements:** An OpenAI API key. Enter it in Settings — the key is held in memory only by default and is **never** written to `settings.json` or any log file. Optionally check "Remember API key" to store it securely via Windows Credential Manager.
+### Presets
+
+Professional Mode uses a **preset system**. Five built-in presets are included:
+
+| Preset | Description |
+|---|---|
+| **General Professional** | Neutral business tone, clear and concise |
+| **Technical / Engineering** | Preserves jargon, acronyms, and technical terminology |
+| **Casual / Friendly** | Warm, approachable, conversational tone |
+| **Email / Correspondence** | Professional email with greeting/sign-off, short paragraphs |
+| **Simplified (8th Grade)** | Short sentences, common words, simple structures |
+
+You can also create, duplicate, and delete custom presets. Each preset has its own toggle settings, custom system prompt, vocabulary list, and optional model override.
+
+**Requirements:** An OpenAI API key. Enter it in Professional Mode Settings — the key is held in memory only by default and is **never** written to `settings.json` or any log file. Optionally check "Remember API key" to store it securely via Windows Credential Manager.
 
 **Example:**
 
-| Input (dictated) | Output (cleaned, all options on) |
+| Input (dictated) | Output (General Professional preset) |
 |---|---|
 | *"I am having a horrible day at work and I am angry and frustrated at you"* | *"I am having a challenging day at work and would like to discuss some concerns with you."* |
 
 ## Architecture
 
 ```
-┌───────────────────────────────────┐
-│          CV2T GUI                 │
-│       (PySide6 / Qt)              │
-├───────────────────────────────────┤
-│   Engine Abstraction              │
-│   ┌───────┐ ┌───────┐            │
-│   │Canary │ │Whisper│            │
-│   │(NeMo) │ │(CT2)  │            │
-│   └───┬───┘ └──┬────┘            │
-│       │        │                  │
-│       ▼        ▼                  │
-│     NVIDIA GPU (CUDA)             │
-├───────────────────────────────────┤
-│   Professional Mode (optional)    │
-│   ┌─────────────────────────┐     │
-│   │ TextProcessor → OpenAI  │     │
-│   │ (tone, grammar, punct.) │     │
-│   └─────────────────────────┘     │
-└───────────────────────────────────┘
+┌───────────────────────────────────────┐
+│          CV2T GUI  (PySide6 / Qt)     │
+│ ┌────────────┐  ┌──────────────────┐  │
+│ │ Hotkey Mgr │  │ Resource Monitor │  │
+│ │ (sleep/    │  │ (RAM + VRAM +    │  │
+│ │  wake safe)│  │  GPU temp)       │  │
+│ └────────────┘  └──────────────────┘  │
+├───────────────────────────────────────┤
+│   Engine Abstraction                  │
+│   ┌──────────┐ ┌──────────────────┐   │
+│   │ Canary   │ │ Whisper (CT2)    │   │
+│   │ (NeMo or │ │                  │   │
+│   │  Bridge) │ │                  │   │
+│   └────┬─────┘ └──────┬──────────┘   │
+│        │               │              │
+│        ▼               ▼              │
+│      NVIDIA GPU (CUDA)                │
+├───────────────────────────────────────┤
+│   Professional Mode (optional)        │
+│   ┌─────────────────────────────────┐ │
+│   │ ProPreset → TextProcessor →     │ │
+│   │ OpenAI API                      │ │
+│   │ (5 built-in + custom presets,   │ │
+│   │  vocabulary, custom prompts)    │ │
+│   └─────────────────────────────────┘ │
+└───────────────────────────────────────┘
 ```
 
 ## Model Comparison

@@ -81,7 +81,7 @@ class AudioRecorder:
             except queue.Empty:
                 break
         self._recording.set()
-        log.info("Recording started")
+        log.debug("Recording started")
 
     def stop_recording(self) -> Optional[np.ndarray]:
         """Stop capturing and return the concatenated audio (or None if empty)."""
@@ -96,7 +96,7 @@ class AudioRecorder:
             log.warning("No audio frames captured")
             return None
         audio = np.concatenate(frames, axis=0)
-        log.info("Recording stopped: %.2fs captured", len(audio) / self.sample_rate)
+        log.debug("Recording stopped: %.2fs captured", len(audio) / self.sample_rate)
         return audio
 
     def get_raw_audio(self) -> Optional[np.ndarray]:

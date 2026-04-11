@@ -35,6 +35,9 @@ Instead, email the maintainer directly or use [GitHub's private vulnerability re
 - **Defender exclusions**: The GUI installer automatically adds Windows Defender exclusions for the install directory and `cv2t.exe` to prevent false positives.
 - **`uv.exe` false positives**: Some anti-malware tools (e.g. Malwarebytes) may quarantine `uv.exe` during source installs. If this happens, restore it and add it to your allow list. [uv](https://github.com/astral-sh/uv) is a widely used open-source Python package manager.
 - **API key handling (Professional Mode)**: OpenAI API keys entered in Settings are held in memory only by default and are **never** written to `settings.json` or any log file. If "Remember API key" is enabled, the key is stored via Windows Credential Manager (protected by Windows DPAPI encryption). API keys are never displayed in the UI log panel, and all error messages are sanitized to redact key content.
+- **Single-instance mutex**: A Windows named mutex (`Global\CV2TMutex`) prevents multiple CV2T processes from running simultaneously, avoiding resource conflicts.
+- **Canary Bridge IPC**: The subprocess bridge (`CanaryBridgeEngine`) communicates with the Canary worker via JSON lines over stdin/stdout — local only, no network exposure.
+- **Blackwell workarounds**: On RTX 50-series GPUs, environment variables `CUDA_LAUNCH_BLOCKING` and `TORCHDYNAMO_DISABLE` are set automatically for stability. These are security-neutral but modify the process environment.
 
 ## Privacy & Data Handling
 

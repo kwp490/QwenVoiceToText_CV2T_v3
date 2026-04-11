@@ -34,6 +34,7 @@ class Settings:
     device: str = "cuda"
     language: str = "en"
     inference_timeout: int = 30
+    force_cuda_sync: str = "auto"          # "auto" | "on" | "off"
 
     # ── Dictation UX ─────────────────────────────────────────────────────────
     auto_copy: bool = True
@@ -59,6 +60,7 @@ class Settings:
 
     _VALID_ENGINES = {"whisper", "canary"}
     _VALID_DEVICES = {"cuda", "cpu"}
+    _VALID_CUDA_SYNC = {"auto", "on", "off"}
 
     def validate(self) -> None:
         """Clamp/correct invalid field values to safe defaults."""
@@ -68,6 +70,10 @@ class Settings:
         if self.device not in self._VALID_DEVICES:
             log.warning("Unknown device '%s'; falling back to 'cuda'", self.device)
             self.device = "cuda"
+        if self.force_cuda_sync not in self._VALID_CUDA_SYNC:
+            log.warning("Unknown force_cuda_sync '%s'; falling back to 'auto'",
+                        self.force_cuda_sync)
+            self.force_cuda_sync = "auto"
         if self.sample_rate < 8000 or self.sample_rate > 48000:
             log.warning("Invalid sample_rate %d; resetting to 16000", self.sample_rate)
             self.sample_rate = 16000

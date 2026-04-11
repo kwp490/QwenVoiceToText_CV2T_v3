@@ -82,6 +82,7 @@ class CanaryBridgeEngine(SpeechEngine):
         self._worker_path: Optional[str] = None
         self._stderr_lines: list[str] = []
         self._stderr_thread: Optional[threading.Thread] = None
+        self.force_cuda_sync: str = "auto"
 
     @property
     def name(self) -> str:
@@ -222,6 +223,7 @@ class CanaryBridgeEngine(SpeechEngine):
             "command": "load",
             "model_path": model_path,
             "device": device,
+            "force_cuda_sync": self.force_cuda_sync,
         })
 
         # Wait for model to load (can take 30-60 s on first run, up to
